@@ -27,6 +27,7 @@ dev = [
 workflow-env = "workflow_platform.workflow_env:main"
 workflow-audit = "workflow_platform.auditor:main"
 workflow-orchestrate = "workflow_platform.orchestrate:main"
+workflow-health = "workflow_platform.health:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/workflow_platform"]
