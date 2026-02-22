@@ -54,17 +54,20 @@ class TestBuildDockerCmd:
         assert "--rm" in cmd
         assert "workflow-auditor:latest" in cmd
 
-    def test_mounts_claude_auth(self) -> None:
+    def test_mounts_claude_auth_to_staging(self) -> None:
         cmd = build_docker_cmd(
             "/tmp/input",
             "/tmp/output",
             service="bid-scraper",
         )
-        # Find the -v flag for claude auth
+        # Find the -v flags for claude auth (json + dir)
         mount_pairs = [cmd[i + 1] for i in range(len(cmd)) if cmd[i] == "-v"]
-        claude_mount = [m for m in mount_pairs if ".claude" in m]
-        assert len(claude_mount) == 1
-        assert ":ro" in claude_mount[0]
+        claude_mounts = [m for m in mount_pairs if ".claude" in m]
+        assert len(claude_mounts) == 2
+        # Both should mount to /audit/auth/ staging dir, read-only
+        for m in claude_mounts:
+            assert "/audit/auth/" in m
+            assert ":ro" in m
 
     def test_mounts_input_readonly(self) -> None:
         cmd = build_docker_cmd(

@@ -31,7 +31,8 @@ log = structlog.get_logger("workflow_platform.auditor")
 
 AUDITOR_IMAGE = "workflow-auditor:latest"
 CONTAINER_NAME_PREFIX = "auditor"
-CLAUDE_HOME = str(Path.home() / ".claude")
+CLAUDE_AUTH_JSON = str(Path.home() / ".claude.json")
+CLAUDE_AUTH_DIR = str(Path.home() / ".claude")
 
 
 def build_image(dockerfile_dir: str) -> bool:
@@ -84,9 +85,11 @@ def build_docker_cmd(
         container_name,
         "--network",
         network,
-        # Mount Claude auth (read-only)
+        # Mount Claude auth to staging dir (read-only, copied to home at startup)
         "-v",
-        f"{CLAUDE_HOME}:/home/node/.claude:ro",
+        f"{CLAUDE_AUTH_JSON}:/audit/auth/.claude.json:ro",
+        "-v",
+        f"{CLAUDE_AUTH_DIR}:/audit/auth/.claude:ro",
         # Mount input (read-only)
         "-v",
         f"{input_dir}:/audit/input:ro",
