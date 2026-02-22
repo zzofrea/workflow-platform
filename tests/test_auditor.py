@@ -211,3 +211,43 @@ class TestRouteNotifications:
         report = {"service": "x", "overall": "pass", "summary": "ok", "scenarios": []}
         # Should not raise
         route_notifications(report)
+
+
+# -- Timeout handling --
+
+
+class TestAuditTimeout:
+    @patch("workflow_platform.auditor.route_notifications")
+    @patch("workflow_platform.auditor.subprocess.run")
+    def test_timeout_produces_error_report(
+        self, mock_run: MagicMock, mock_notify: MagicMock, tmp_path: Path
+    ) -> None:
+        """When the auditor container times out, an error report is produced."""
+        import subprocess as sp
+
+        from workflow_platform.auditor import run_audit
+
+        spec = tmp_path / "spec.md"
+        spec.write_text("GIVEN x. WHEN y. THEN z.")
+        access = tmp_path / "access.md"
+        access.write_text("psql -h db")
+
+        # First call (docker run) raises TimeoutExpired, subsequent calls (kill, rm) succeed
+        mock_run.side_effect = [
+            sp.TimeoutExpired(cmd=["docker", "run"], timeout=10),
+            MagicMock(returncode=0),  # docker kill
+            MagicMock(returncode=0),  # docker rm
+        ]
+
+        report = run_audit(
+            str(spec),
+            str(access),
+            service="test-svc",
+            mode="prod",
+            audit_timeout=10,
+            notify=True,
+        )
+
+        assert report["overall"] == "error"
+        assert "timed out" in report["summary"].lower()
+        mock_notify.assert_called_once()

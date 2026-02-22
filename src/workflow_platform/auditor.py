@@ -123,8 +123,16 @@ def run_audit(
     max_turns: int = 20,
     network: str = "dokploy-network",
     notify: bool = True,
+    audit_timeout: int = 600,
+    archive_dir: str | None = None,
 ) -> dict[str, Any]:
     """Run a full audit cycle: prepare, execute container, collect report.
+
+    Args:
+        audit_timeout: Max seconds for the auditor container before it is killed.
+            Defaults to 600 (10 minutes).
+        archive_dir: Pre-created directory for archiving reports. If None, a new
+            timestamped directory is created under ~/audit-reports/{service}/.
 
     Returns the parsed report dict.
     """
@@ -163,27 +171,59 @@ def run_audit(
             network=network,
         )
 
+        container_name = f"{CONTAINER_NAME_PREFIX}-{service}-{mode}"
         log.info("auditor.container_starting", service=service, mode=mode, model=model)
         print(f"Starting auditor: service={service} mode={mode} model={model}")
 
-        # Run the container
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=660,  # 11 min (container has 10 min internal timeout)
-        )
+        # Run the container with timeout
+        timed_out = False
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=audit_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            log.warning(
+                "auditor.timeout",
+                service=service,
+                timeout_seconds=audit_timeout,
+            )
+            print(f"Auditor timed out after {audit_timeout}s -- killing container")
+            subprocess.run(
+                ["docker", "kill", container_name],
+                capture_output=True,
+                timeout=30,
+            )
+            # Also clean up the container (--rm may not fire after kill)
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True,
+                timeout=30,
+            )
 
-        print(result.stdout)
-        if result.stderr:
-            print(result.stderr, file=sys.stderr)
+        if not timed_out:
+            print(result.stdout)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr)
 
         # Collect report
         report_json_path = os.path.join(output_dir, "report.json")
         report_md_path = os.path.join(output_dir, "report.md")
 
         report: dict[str, Any] = {}
-        if os.path.exists(report_json_path):
+        if timed_out:
+            report = {
+                "mode": mode,
+                "service": service,
+                "overall": "error",
+                "summary": f"Auditor timed out after {audit_timeout} seconds",
+                "scenarios": [],
+            }
+            log.error("auditor.timeout_report", service=service)
+        elif os.path.exists(report_json_path):
             with open(report_json_path) as f:
                 report = json.load(f)
             log.info(
@@ -203,7 +243,7 @@ def run_audit(
             log.error("auditor.no_report", stdout=result.stdout[:500])
 
         # Copy reports to a persistent location
-        report_dir = _report_archive_dir(service, mode)
+        report_dir = archive_dir or _report_archive_dir(service, mode)
         os.makedirs(report_dir, exist_ok=True)
         with open(os.path.join(report_dir, "report.json"), "w") as f:
             json.dump(report, f, indent=2)

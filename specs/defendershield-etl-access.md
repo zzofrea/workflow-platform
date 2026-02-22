@@ -85,7 +85,7 @@ BI-optimized snapshot.
 
 ## Service Schedule
 
-- ETL runs daily at 6:00 AM ET via Dokploy cron in `--catchup` mode
+- ETL runs daily at 6:15 AM ET via `workflow-orchestrate monitor --exec` in `--catchup` mode
 - Catchup processes all unprocessed silver orders (self-healing)
 - Container: ds-etl-nhdcjb-etl-scheduler-1
 - Docker hostname on dokploy-network: ds-etl-postgres (DB)
