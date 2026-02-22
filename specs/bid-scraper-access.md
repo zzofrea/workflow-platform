@@ -110,6 +110,6 @@ Execution log for each scrape run.
 
 ## Service Schedule
 
-- Scraper runs daily at 6:00 AM ET via Dokploy cron
+- Scraper runs daily at 5:00 AM ET via workflow-orchestrate monitor --exec
 - Container: compose-bypass-solid-state-feed-6p6e3c-scraper-1
 - Docker hostname on dokploy-network: bid-scraper-postgres (DB), bid-scraper-scraper (app)
