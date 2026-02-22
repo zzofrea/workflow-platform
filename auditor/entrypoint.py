@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 INPUT_DIR = "/audit/input"
 OUTPUT_DIR = "/audit/output"
+AUTH_STAGING_DIR = "/audit/auth"
 
 SYSTEM_PROMPT = """\
 You are a behavioral auditor. Your job is to verify that a running service \
@@ -52,6 +55,38 @@ extra text):
   "summary": "One-line overall assessment"
 }
 """
+
+
+def setup_claude_auth() -> None:
+    """Copy Claude auth from read-only staging mount to writable home.
+
+    Claude CLI needs to write to ~/.claude.json and ~/.claude/ (debug logs,
+    todos, temp files). We mount the host auth to /audit/auth/ read-only,
+    then copy here so the CLI has writable copies.
+    """
+    home = Path.home()
+    staging = Path(AUTH_STAGING_DIR)
+
+    # Copy .claude.json if present in staging
+    src_json = staging / ".claude.json"
+    if src_json.exists():
+        shutil.copy2(src_json, home / ".claude.json")
+        print("Copied .claude.json to home", file=sys.stderr)
+
+    # Copy .claude/ directory if present in staging
+    # Use ignore_dangling_symlinks + symlinks=True for debug/latest etc.
+    src_dir = staging / ".claude"
+    if src_dir.is_dir():
+        dest_dir = home / ".claude"
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir)
+        shutil.copytree(
+            src_dir,
+            dest_dir,
+            symlinks=True,
+            ignore_dangling_symlinks=True,
+        )
+        print("Copied .claude/ directory to home", file=sys.stderr)
 
 
 def read_input_file(name: str) -> str:
@@ -269,6 +304,9 @@ def main() -> None:
     max_turns = int(os.environ.get("AUDITOR_MAX_TURNS", "20"))
 
     print(f"Auditor starting: mode={mode} model={model} service={service}")
+
+    # Set up writable Claude auth from read-only staging mount
+    setup_claude_auth()
 
     spec = read_input_file("spec.md")
     access = read_input_file("access.md")

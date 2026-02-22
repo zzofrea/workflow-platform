@@ -11,11 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Claude Code CLI globally
 RUN npm install -g @anthropic-ai/claude-code@latest
 
-# Create audit directories
-RUN mkdir -p /audit/input /audit/output
+# Create audit directories and auth staging area owned by node user
+RUN mkdir -p /audit/input /audit/output /audit/auth && chown -R node:node /audit
 
 # Copy the entrypoint
-COPY auditor/entrypoint.py /audit/entrypoint.py
+COPY --chown=node:node auditor/entrypoint.py /audit/entrypoint.py
 
+# Run as non-root node user (required for --dangerously-skip-permissions)
+USER node
 WORKDIR /audit
 ENTRYPOINT ["python3", "/audit/entrypoint.py"]
