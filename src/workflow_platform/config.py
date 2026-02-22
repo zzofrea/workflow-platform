@@ -18,3 +18,9 @@ class PlatformConfig(BaseSettings):
     # Resource guard thresholds
     max_containers: int = 18
     min_free_ram_mb: int = 3072  # 3 GB
+
+    # Service-to-container mapping for docker exec
+    service_containers: dict[str, str] = {
+        "defendershield-etl": "ds-etl-nhdcjb-etl-scheduler-1",
+        "bid-scraper": "compose-bypass-solid-state-feed-6p6e3c-scraper-1",
+    }

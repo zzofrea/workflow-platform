@@ -8,6 +8,8 @@ Usage:
     workflow-orchestrate build  --service bid-scraper --spec spec.md --access access.md
     workflow-orchestrate deploy --service bid-scraper --repo /home/docker/burgess-scrape-research
     workflow-orchestrate monitor --service bid-scraper --spec spec.md --access access.md
+    workflow-orchestrate monitor --service defendershield-etl \\
+        --exec "python -m ..." --spec spec.md --access access.md
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from typing import Any
 
 import structlog
 
-from workflow_platform.auditor import run_audit
+from workflow_platform.auditor import _report_archive_dir, run_audit
 from workflow_platform.config import PlatformConfig
 from workflow_platform.workflow_env import cmd_destroy, cmd_up, get_client
 
@@ -251,21 +253,152 @@ def _send_deploy_notification(service: str, branch: str, repo_path: str) -> None
 # -- Monitor command --
 
 
+def _check_container_running(container_name: str) -> bool:
+    """Check if a Docker container is running."""
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _exec_service(
+    container_name: str,
+    command: str,
+    *,
+    service: str,
+) -> tuple[int, str, str]:
+    """Run a command via docker exec on a service container.
+
+    Returns (exit_code, stdout, stderr).
+    """
+    log.info("orchestrate.exec_start", service=service, container=container_name, command=command)
+    print(f"Executing: docker exec {container_name} {command}")
+
+    result = subprocess.run(
+        ["docker", "exec", container_name, *command.split()],
+        capture_output=True,
+        text=True,
+        timeout=3600,  # 1 hour max for long-running ETL jobs
+    )
+
+    log.info("orchestrate.exec_complete", service=service, exit_code=result.returncode)
+    return result.returncode, result.stdout, result.stderr
+
+
+def _notify_exec_failure(service: str, exit_code: int, stderr: str) -> None:
+    """Send a warning notification for a failed service exec."""
+    try:
+        from workflow_notify import NotifyConfig, fanout
+
+        fanout(
+            config=NotifyConfig(),
+            service=service,
+            severity="warning",
+            message=(
+                f"Service exec FAILED for {service} (exit code {exit_code}). Proceeding to audit."
+            ),
+            observation=f"docker exec exited {exit_code}",
+            evidence=stderr[:500] if stderr else "No stderr output",
+            suggested_action="Check service logs and re-run manually if needed",
+        )
+    except ImportError:
+        log.warning("orchestrate.notify_unavailable")
+    except Exception as exc:
+        log.warning("orchestrate.notify_failed", error=str(exc))
+
+
+def _notify_container_not_running(service: str, container_name: str) -> None:
+    """Send a critical notification when the target container is not running."""
+    try:
+        from workflow_notify import NotifyConfig, fanout
+
+        fanout(
+            config=NotifyConfig(),
+            service=service,
+            severity="critical",
+            message=(
+                f"CRITICAL: Container '{container_name}' for {service} is not running. "
+                f"No exec or audit performed."
+            ),
+            observation=f"Container {container_name} is stopped or does not exist",
+            evidence="docker inspect returned non-running state",
+            suggested_action=f"Check container status: docker ps -a | grep {container_name}",
+        )
+    except ImportError:
+        log.warning("orchestrate.notify_unavailable")
+    except Exception as exc:
+        log.warning("orchestrate.notify_failed", error=str(exc))
+
+
 def cmd_monitor(
     service: str,
     spec_path: str,
     access_path: str,
     *,
+    exec_command: str | None = None,
     model: str = "sonnet",
     max_turns: int = 20,
+    audit_timeout: int = 600,
 ) -> dict[str, Any]:
     """Run the auditor in prod mode against a live service.
 
+    If exec_command is provided, runs it via docker exec on the service's
+    container before auditing. The audit runs regardless of exec outcome
+    (unless the container is not running).
+
     Returns the audit report dict.
     """
-    print(f"=== Monitor: {service} ===")
-    log.info("orchestrate.monitor_start", service=service)
+    config = PlatformConfig()
 
+    print(f"=== Monitor: {service} ===")
+    log.info("orchestrate.monitor_start", service=service, has_exec=exec_command is not None)
+
+    # Resolve archive dir early so exec output can be saved alongside the report
+    archive_dir = _report_archive_dir(service, "prod")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    # -- Exec phase --
+    if exec_command is not None:
+        container_name = config.service_containers.get(service)
+        if not container_name:
+            print(
+                f"Error: No container mapping for service '{service}' in config.",
+                file=sys.stderr,
+            )
+            log.error("orchestrate.no_container_mapping", service=service)
+            sys.exit(1)
+
+        # Check container is running
+        if not _check_container_running(container_name):
+            print(f"Error: Container '{container_name}' is not running.", file=sys.stderr)
+            log.error("orchestrate.container_not_running", container=container_name)
+            _notify_container_not_running(service, container_name)
+            sys.exit(1)
+
+        # Execute the service command
+        print(f"\n--- Exec: {exec_command} ---")
+        exit_code, stdout, stderr = _exec_service(container_name, exec_command, service=service)
+
+        # Save exec output to archive
+        with open(os.path.join(archive_dir, "exec_output.log"), "w") as f:
+            f.write(f"=== EXEC: docker exec {container_name} {exec_command} ===\n")
+            f.write(f"=== EXIT CODE: {exit_code} ===\n\n")
+            f.write("=== STDOUT ===\n")
+            f.write(stdout)
+            f.write("\n=== STDERR ===\n")
+            f.write(stderr)
+
+        if exit_code != 0:
+            print(f"Warning: Service exec failed (exit {exit_code}). Proceeding to audit.")
+            _notify_exec_failure(service, exit_code, stderr)
+        else:
+            print("Service exec completed successfully.")
+
+    # -- Audit phase --
+    print("\n--- Audit ---")
     report = run_audit(
         spec_path=spec_path,
         access_path=access_path,
@@ -274,6 +407,8 @@ def cmd_monitor(
         model=model,
         max_turns=max_turns,
         notify=True,
+        audit_timeout=audit_timeout,
+        archive_dir=archive_dir,
     )
 
     overall = report.get("overall", "error")
@@ -315,10 +450,24 @@ def main() -> None:
     )
 
     # Monitor
-    mon_p = sub.add_parser("monitor", help="Run auditor in prod mode")
+    mon_p = sub.add_parser(
+        "monitor", help="Run auditor in prod mode (optionally exec service first)"
+    )
     mon_p.add_argument("--service", required=True, help="Service name")
     mon_p.add_argument("--spec", required=True, help="Path to behavioral spec")
     mon_p.add_argument("--access", required=True, help="Path to access document")
+    mon_p.add_argument(
+        "--exec",
+        dest="exec_command",
+        default=None,
+        help="Command to run via docker exec before auditing (e.g., 'python -m my_module run')",
+    )
+    mon_p.add_argument(
+        "--audit-timeout",
+        type=int,
+        default=600,
+        help="Max seconds for auditor container (default: 600 = 10 min)",
+    )
     mon_p.add_argument("--model", default="sonnet", help="Claude model")
     mon_p.add_argument("--max-turns", type=int, default=20, help="Max auditor turns")
 
@@ -351,8 +500,10 @@ def main() -> None:
             args.service,
             args.spec,
             args.access,
+            exec_command=args.exec_command,
             model=args.model,
             max_turns=args.max_turns,
+            audit_timeout=args.audit_timeout,
         )
         if report.get("overall") in ("fail", "error"):
             sys.exit(1)

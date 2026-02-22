@@ -11,7 +11,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from workflow_platform.orchestrate import (
+    _check_container_running,
     _confirm,
+    _exec_service,
     _latest_report,
     cmd_build,
     cmd_deploy,
@@ -248,12 +250,52 @@ class TestCmdDeploy:
         assert ok is True
 
 
+# -- Container helpers --
+
+
+class TestCheckContainerRunning:
+    @patch("workflow_platform.orchestrate.subprocess.run")
+    def test_returns_true_when_running(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="true\n")
+        assert _check_container_running("my-container") is True
+
+    @patch("workflow_platform.orchestrate.subprocess.run")
+    def test_returns_false_when_stopped(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="false\n")
+        assert _check_container_running("my-container") is False
+
+    @patch("workflow_platform.orchestrate.subprocess.run")
+    def test_returns_false_when_not_found(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert _check_container_running("nonexistent") is False
+
+
+class TestExecService:
+    @patch("workflow_platform.orchestrate.subprocess.run")
+    def test_returns_exit_code_and_output(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok\n", stderr="")
+        code, out, err = _exec_service("container", "python -m mymod", service="test")
+        assert code == 0
+        assert out == "ok\n"
+        assert err == ""
+
+    @patch("workflow_platform.orchestrate.subprocess.run")
+    def test_splits_command_string(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _exec_service("ctr", "python -m mymod run", service="test")
+        call_args = mock_run.call_args[0][0]
+        assert call_args == ["docker", "exec", "ctr", "python", "-m", "mymod", "run"]
+
+
 # -- Monitor command --
 
 
 class TestCmdMonitor:
     @patch("workflow_platform.orchestrate.run_audit")
-    def test_monitor_runs_in_prod_mode(self, mock_run_audit: MagicMock, tmp_path: Path) -> None:
+    @patch("workflow_platform.orchestrate.PlatformConfig")
+    def test_monitor_runs_in_prod_mode(
+        self, mock_config: MagicMock, mock_run_audit: MagicMock, tmp_path: Path
+    ) -> None:
         spec = tmp_path / "spec.md"
         spec.write_text("GIVEN x.")
         access = tmp_path / "access.md"
@@ -272,7 +314,10 @@ class TestCmdMonitor:
         assert call_kwargs["mode"] == "prod"
 
     @patch("workflow_platform.orchestrate.run_audit")
-    def test_monitor_returns_failures(self, mock_run_audit: MagicMock, tmp_path: Path) -> None:
+    @patch("workflow_platform.orchestrate.PlatformConfig")
+    def test_monitor_returns_failures(
+        self, mock_config: MagicMock, mock_run_audit: MagicMock, tmp_path: Path
+    ) -> None:
         spec = tmp_path / "spec.md"
         spec.write_text("GIVEN x.")
         access = tmp_path / "access.md"
@@ -287,3 +332,158 @@ class TestCmdMonitor:
         report = cmd_monitor("bid-scraper", str(spec), str(access))
 
         assert report["overall"] == "fail"
+
+    @patch("workflow_platform.orchestrate.run_audit")
+    @patch("workflow_platform.orchestrate._exec_service")
+    @patch("workflow_platform.orchestrate._check_container_running", return_value=True)
+    @patch("workflow_platform.orchestrate._report_archive_dir")
+    @patch("workflow_platform.orchestrate.PlatformConfig")
+    def test_exec_runs_before_audit(
+        self,
+        mock_config: MagicMock,
+        mock_archive_dir: MagicMock,
+        mock_check: MagicMock,
+        mock_exec: MagicMock,
+        mock_run_audit: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        spec = tmp_path / "spec.md"
+        spec.write_text("GIVEN x.")
+        access = tmp_path / "access.md"
+        access.write_text("psql -h db")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        mock_archive_dir.return_value = str(archive)
+
+        mock_config.return_value.service_containers = {"etl": "etl-container"}
+        mock_exec.return_value = (0, "ETL done\n", "")
+        mock_run_audit.return_value = {"overall": "pass", "summary": "ok", "scenarios": []}
+
+        report = cmd_monitor("etl", str(spec), str(access), exec_command="python -m etl run")
+
+        assert report["overall"] == "pass"
+        mock_check.assert_called_once_with("etl-container")
+        mock_exec.assert_called_once()
+        mock_run_audit.assert_called_once()
+        # Verify exec output was saved
+        assert (archive / "exec_output.log").exists()
+
+    @patch("workflow_platform.orchestrate.run_audit")
+    @patch("workflow_platform.orchestrate._notify_exec_failure")
+    @patch("workflow_platform.orchestrate._exec_service")
+    @patch("workflow_platform.orchestrate._check_container_running", return_value=True)
+    @patch("workflow_platform.orchestrate._report_archive_dir")
+    @patch("workflow_platform.orchestrate.PlatformConfig")
+    def test_exec_failure_still_audits(
+        self,
+        mock_config: MagicMock,
+        mock_archive_dir: MagicMock,
+        mock_check: MagicMock,
+        mock_exec: MagicMock,
+        mock_notify_exec: MagicMock,
+        mock_run_audit: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        spec = tmp_path / "spec.md"
+        spec.write_text("GIVEN x.")
+        access = tmp_path / "access.md"
+        access.write_text("psql -h db")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        mock_archive_dir.return_value = str(archive)
+
+        mock_config.return_value.service_containers = {"etl": "etl-ctr"}
+        mock_exec.return_value = (1, "", "API timeout\n")
+        mock_run_audit.return_value = {"overall": "pass", "summary": "data ok", "scenarios": []}
+
+        report = cmd_monitor("etl", str(spec), str(access), exec_command="python -m etl run")
+
+        assert report["overall"] == "pass"
+        mock_notify_exec.assert_called_once_with("etl", 1, "API timeout\n")
+        mock_run_audit.assert_called_once()
+
+    @patch("workflow_platform.orchestrate._notify_container_not_running")
+    @patch("workflow_platform.orchestrate._check_container_running", return_value=False)
+    @patch("workflow_platform.orchestrate._report_archive_dir")
+    @patch("workflow_platform.orchestrate.PlatformConfig")
+    def test_container_not_running_exits(
+        self,
+        mock_config: MagicMock,
+        mock_archive_dir: MagicMock,
+        mock_check: MagicMock,
+        mock_notify_ctr: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        spec = tmp_path / "spec.md"
+        spec.write_text("GIVEN x.")
+        access = tmp_path / "access.md"
+        access.write_text("psql -h db")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        mock_archive_dir.return_value = str(archive)
+
+        mock_config.return_value.service_containers = {"etl": "etl-ctr"}
+
+        import pytest
+
+        with pytest.raises(SystemExit):
+            cmd_monitor("etl", str(spec), str(access), exec_command="python -m etl run")
+
+        mock_notify_ctr.assert_called_once_with("etl", "etl-ctr")
+
+    @patch("workflow_platform.orchestrate.run_audit")
+    @patch("workflow_platform.orchestrate.PlatformConfig")
+    def test_monitor_without_exec_works_as_before(
+        self, mock_config: MagicMock, mock_run_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """When --exec is not provided, monitor is audit-only (no docker exec)."""
+        spec = tmp_path / "spec.md"
+        spec.write_text("GIVEN x.")
+        access = tmp_path / "access.md"
+        access.write_text("psql -h db")
+
+        mock_run_audit.return_value = {"overall": "pass", "summary": "ok", "scenarios": []}
+
+        report = cmd_monitor("bid-scraper", str(spec), str(access))
+
+        assert report["overall"] == "pass"
+        # run_audit should still receive audit_timeout
+        call_kwargs = mock_run_audit.call_args.kwargs
+        assert call_kwargs["audit_timeout"] == 600
+
+    @patch("workflow_platform.orchestrate.run_audit")
+    @patch("workflow_platform.orchestrate._exec_service")
+    @patch("workflow_platform.orchestrate._check_container_running", return_value=True)
+    @patch("workflow_platform.orchestrate._report_archive_dir")
+    @patch("workflow_platform.orchestrate.PlatformConfig")
+    def test_audit_timeout_passed_through(
+        self,
+        mock_config: MagicMock,
+        mock_archive_dir: MagicMock,
+        mock_check: MagicMock,
+        mock_exec: MagicMock,
+        mock_run_audit: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        spec = tmp_path / "spec.md"
+        spec.write_text("GIVEN x.")
+        access = tmp_path / "access.md"
+        access.write_text("psql -h db")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        mock_archive_dir.return_value = str(archive)
+
+        mock_config.return_value.service_containers = {"etl": "etl-ctr"}
+        mock_exec.return_value = (0, "", "")
+        mock_run_audit.return_value = {"overall": "pass", "summary": "ok", "scenarios": []}
+
+        cmd_monitor(
+            "etl",
+            str(spec),
+            str(access),
+            exec_command="python -m etl run",
+            audit_timeout=300,
+        )
+
+        call_kwargs = mock_run_audit.call_args.kwargs
+        assert call_kwargs["audit_timeout"] == 300

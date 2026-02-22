@@ -13,7 +13,7 @@ THEN there are at least 100,000 line items spanning multiple years.
 ## Scenario 3: Sales data is fresh
 GIVEN the ETL runs daily in catchup mode.
 WHEN the most recent sale_date in silver.fact_sales_items is checked.
-THEN data exists for at least one date within the past 7 days.
+THEN data exists for at least one date within the past 2 days.
 
 ## Scenario 4: Multiple marketplaces represented
 GIVEN DefenderShield sells across multiple channels.
@@ -28,7 +28,7 @@ THEN it contains at least 100,000 records.
 ## Scenario 6: Forecast depletion is current
 GIVEN inventory forecasts are regenerated on each ETL run.
 WHEN gold.forecast_depletion is queried.
-THEN the forecast_date is within the past 7 days for at least one SKU.
+THEN the forecast_date is within the past 2 days for at least one SKU.
 
 ## Scenario 7: Forecast classifications are valid
 GIVEN SKUs are classified by depletion risk.

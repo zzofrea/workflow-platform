@@ -207,7 +207,10 @@ AND spinning down one project's dev environment does not affect the other.
 ### 6. Catchup scope
 **Decision:** Pull-based pipelines (scrapers, ETL): watermark pattern -- track last success, process from there. Push-based services: log gaps and alert, no replay possible. Reference implementation: ETL `--catchup` mode.
 
-### 7. AI cost management
+### 7. Monitor `--exec` for service execution
+**Decision:** The `monitor` command supports an `--exec` flag that runs a command via `docker exec` on the service's container before auditing. This replaces per-service shell wrapper scripts (`run-and-audit.sh`) with a single CLI entry point. Container names are resolved from a service registry in config. If exec fails, the audit still runs. If the container isn't running, a `critical` notification fires and the command exits (no audit). The auditor has a 10-minute timeout to prevent runaway token burn. Crontab entries become a single `workflow-orchestrate monitor --exec ...` call.
+
+### 8. AI cost management
 **Decision:** Max subscription only (no API costs). Sonnet 4.6 for routine audits, Opus for deep work. Token limit per auditor run with usage reported in output JSON. No monthly budget ceiling needed since Max subscription is flat-rate.
 
 ## Implementation Constraints
