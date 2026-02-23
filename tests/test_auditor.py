@@ -11,8 +11,10 @@ from unittest.mock import MagicMock, patch
 
 from workflow_platform.auditor import (
     _classify_severity,
+    _image_exists_locally,
     build_docker_cmd,
     prepare_input,
+    pull_image,
     route_notifications,
 )
 
@@ -52,7 +54,7 @@ class TestBuildDockerCmd:
         )
         assert cmd[0:2] == ["docker", "run"]
         assert "--rm" in cmd
-        assert "workflow-auditor:latest" in cmd
+        assert "ghcr.io/zzofrea/workflow-auditor:latest" in cmd
 
     def test_mounts_claude_auth_to_staging(self) -> None:
         cmd = build_docker_cmd(
@@ -125,6 +127,33 @@ class TestBuildDockerCmd:
         )
         name_idx = cmd.index("--name")
         assert cmd[name_idx + 1] == "auditor-etl-prod"
+
+
+# -- Image pull logic --
+
+
+class TestPullImage:
+    @patch("workflow_platform.auditor.subprocess.run")
+    def test_pull_succeeds(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        assert pull_image() is True
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["docker", "pull", "ghcr.io/zzofrea/workflow-auditor:latest"]
+
+    @patch("workflow_platform.auditor.subprocess.run")
+    def test_pull_fails(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")
+        assert pull_image() is False
+
+    @patch("workflow_platform.auditor.subprocess.run")
+    def test_image_exists_locally(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0)
+        assert _image_exists_locally() is True
+
+    @patch("workflow_platform.auditor.subprocess.run")
+    def test_image_not_exists_locally(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1)
+        assert _image_exists_locally() is False
 
 
 # -- Severity classification --
@@ -232,8 +261,9 @@ class TestAuditTimeout:
         access = tmp_path / "access.md"
         access.write_text("psql -h db")
 
-        # First call (docker run) raises TimeoutExpired, subsequent calls (kill, rm) succeed
+        # Calls: image inspect (exists), docker run (timeout), docker kill, docker rm
         mock_run.side_effect = [
+            MagicMock(returncode=0),  # docker image inspect (image exists locally)
             sp.TimeoutExpired(cmd=["docker", "run"], timeout=10),
             MagicMock(returncode=0),  # docker kill
             MagicMock(returncode=0),  # docker rm

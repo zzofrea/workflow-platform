@@ -29,14 +29,18 @@ except ImportError:
 
 log = structlog.get_logger("workflow_platform.auditor")
 
-AUDITOR_IMAGE = "workflow-auditor:latest"
+AUDITOR_IMAGE = "ghcr.io/zzofrea/workflow-auditor:latest"
 CONTAINER_NAME_PREFIX = "auditor"
 CLAUDE_AUTH_JSON = str(Path.home() / ".claude.json")
 CLAUDE_AUTH_DIR = str(Path.home() / ".claude")
 
 
 def build_image(dockerfile_dir: str) -> bool:
-    """Build the auditor Docker image if not already present."""
+    """Build the auditor Docker image locally (dev convenience).
+
+    For production, the image is built by GitHub Actions and pushed to GHCR.
+    This command is useful during local development to iterate on the Dockerfile.
+    """
     result = subprocess.run(
         [
             "docker",
@@ -56,6 +60,31 @@ def build_image(dockerfile_dir: str) -> bool:
         return False
     log.info("auditor.image_built", image=AUDITOR_IMAGE)
     return True
+
+
+def pull_image() -> bool:
+    """Pull the auditor image from GHCR."""
+    result = subprocess.run(
+        ["docker", "pull", AUDITOR_IMAGE],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        log.error("auditor.pull_failed", stderr=result.stderr[:2000])
+        return False
+    log.info("auditor.image_pulled", image=AUDITOR_IMAGE)
+    return True
+
+
+def _image_exists_locally() -> bool:
+    """Check if the auditor image is already available locally."""
+    result = subprocess.run(
+        ["docker", "image", "inspect", AUDITOR_IMAGE],
+        capture_output=True,
+        timeout=10,
+    )
+    return result.returncode == 0
 
 
 def prepare_input(input_dir: str, spec_path: str, access_path: str) -> None:
@@ -136,6 +165,14 @@ def run_audit(
 
     Returns the parsed report dict.
     """
+    # Ensure the auditor image is available (pull from GHCR if pruned)
+    if not _image_exists_locally():
+        log.info("auditor.image_missing_locally", image=AUDITOR_IMAGE)
+        if not pull_image():
+            log.error("auditor.image_unavailable", image=AUDITOR_IMAGE)
+            print(f"Error: Could not pull auditor image: {AUDITOR_IMAGE}", file=sys.stderr)
+            sys.exit(1)
+
     # Validate inputs exist
     if not os.path.isfile(spec_path):
         log.error("auditor.spec_not_found", path=spec_path)
