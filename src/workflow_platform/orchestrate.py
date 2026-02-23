@@ -6,7 +6,7 @@ irreversible decision point.
 
 Usage:
     workflow-orchestrate build  --service bid-scraper --spec spec.md --access access.md
-    workflow-orchestrate deploy --service bid-scraper --repo /home/docker/burgess-scrape-research
+    workflow-orchestrate deploy --service bid-scraper --repo /home/docker/gov-bid-scrape
     workflow-orchestrate monitor --service bid-scraper --spec spec.md --access access.md
     workflow-orchestrate monitor --service defendershield-etl \\
         --exec "python -m ..." --spec spec.md --access access.md
