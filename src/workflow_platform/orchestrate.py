@@ -24,8 +24,9 @@ from typing import Any
 
 import structlog
 
-from workflow_platform.auditor import _report_archive_dir, run_audit
+from workflow_platform.auditor import _report_archive_dir
 from workflow_platform.config import PlatformConfig
+from workflow_platform.two_stage_auditor import run_two_stage_audit
 from workflow_platform.workflow_env import cmd_destroy, cmd_up, get_client
 
 log = structlog.get_logger("workflow_platform.orchestrate")
@@ -95,7 +96,7 @@ def cmd_build(
 
     # Step 3: Run auditor against dev
     print("\n--- Step 2: Behavioral audit ---")
-    report = run_audit(
+    report = run_two_stage_audit(
         spec_path=spec_path,
         access_path=access_path,
         service=service,
@@ -399,7 +400,7 @@ def cmd_monitor(
 
     # -- Audit phase --
     print("\n--- Audit ---")
-    report = run_audit(
+    report = run_two_stage_audit(
         spec_path=spec_path,
         access_path=access_path,
         service=service,
@@ -407,7 +408,7 @@ def cmd_monitor(
         model=model,
         max_turns=max_turns,
         notify=True,
-        audit_timeout=audit_timeout,
+        total_timeout=audit_timeout,
         archive_dir=archive_dir,
     )
 

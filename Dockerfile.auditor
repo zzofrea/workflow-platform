@@ -17,7 +17,7 @@ RUN mkdir -p /audit/input /audit/output /audit/auth && chown -R node:node /audit
 # Copy the entrypoint
 COPY --chown=node:node auditor/entrypoint.py /audit/entrypoint.py
 
-# Run as non-root node user (required for --dangerously-skip-permissions)
+# Run as non-root node user (planner + analyzer stages, no skip-permissions)
 USER node
 WORKDIR /audit
 ENTRYPOINT ["python3", "/audit/entrypoint.py"]
