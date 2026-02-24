@@ -1,8 +1,11 @@
 # Bid Scraper Behavioral Specification
 
-Note: The auditor evaluates these scenarios using truncated SELECT * samples
-(first ~4KB per table showing total row count) and full API endpoint responses.
-Scenarios are written to be verifiable from this limited data window.
+Note: The auditor evaluates these scenarios by reading raw psql text output
+(SELECT * truncated to ~4KB per table, with total row count appended) and
+full API curl responses. The analyzer has NO ability to run code, sort, filter,
+or aggregate data -- it can only inspect the literal text output. Scenarios
+must be verifiable from what is visible in the first few rows of each table
+plus the total row count.
 
 ## Scenario 1: Database connectivity
 GIVEN the bid scraper service has a running database.
