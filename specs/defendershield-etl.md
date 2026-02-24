@@ -1,11 +1,9 @@
 # DefenderShield ETL Behavioral Specification
 
-Note: The auditor evaluates these scenarios by reading raw psql text output
-(SELECT * truncated to ~4KB per table, with total row count appended) and
-the access document schema. The analyzer has NO ability to run code, sort,
-filter, or aggregate data -- it can only inspect the literal text output.
-Scenarios must be verifiable from what is visible in the first few rows of
-each table plus the total row count.
+Note: The analyzer has Bash access and CAN run Python, jq, and grep on the
+full executor results (executor_results.json). This enables row counting,
+percentage-based integrity checks, and full-table analysis. Scenarios should
+use concrete numeric thresholds that the analyzer can verify programmatically.
 
 ## Scenario 1: Database connectivity
 GIVEN the ETL service has a running database.
@@ -14,45 +12,45 @@ THEN the database accepts connections and responds to queries for all documented
 
 ## Scenario 2: Silver layer record volume
 GIVEN the ETL ingests sales data from multiple marketplaces.
-WHEN the silver.fact_sales_items table row count is checked.
+WHEN the silver.fact_sales_items table row count is computed.
 THEN there are at least 100,000 total line items.
 
-## Scenario 3: Sales data spans multiple years
-GIVEN DefenderShield has been selling products since 2017.
-WHEN the sampled silver.fact_sales_items rows are examined.
-THEN at least 2 distinct sale_date years are visible in the sample.
+## Scenario 3: Sales data freshness
+GIVEN the ETL runs daily and ingests recent orders.
+WHEN the silver.fact_sales_items table is analyzed for recency.
+THEN there are rows with _created_at within the past 7 days.
 
-## Scenario 4: Multiple marketplaces represented
+## Scenario 4: Marketplace diversity
 GIVEN DefenderShield sells across multiple channels.
-WHEN the marketplace column in sampled silver.fact_sales_items rows is examined.
-THEN at least 2 distinct marketplace values are visible in the sample.
+WHEN the distinct marketplace values in silver.fact_sales_items are counted.
+THEN there are at least 3 distinct marketplaces.
 
-## Scenario 5: Gold snapshot is populated
+## Scenario 5: Gold snapshot volume
 GIVEN the ETL produces a completed sales snapshot.
-WHEN the gold.completed_sales_items_snapshot table row count is checked.
+WHEN the gold.completed_sales_items_snapshot table row count is computed.
 THEN it contains at least 100,000 records.
 
-## Scenario 6: Forecast depletion is current
+## Scenario 6: Forecast freshness
 GIVEN inventory forecasts are regenerated on each ETL run.
-WHEN the sampled gold.forecast_depletion rows are examined.
+WHEN the gold.forecast_depletion table is analyzed for recency.
 THEN at least some rows have a forecast_date within the past 7 days.
 
-## Scenario 7: Forecast classifications are valid
+## Scenario 7: Forecast classification completeness
 GIVEN SKUs are classified by depletion risk.
-WHEN the sampled gold.forecast_depletion rows are examined.
-THEN all visible rows have a non-null classification value.
+WHEN the gold.forecast_depletion table is analyzed for null classifications.
+THEN all rows have a non-null classification value.
 
-## Scenario 8: Monthly aggregations exist
+## Scenario 8: Monthly aggregation coverage
 GIVEN the ETL produces monthly sales rollups.
-WHEN the silver.monthly_sales_by_sku table row count is checked.
-THEN there are at least 1,000 aggregation rows.
+WHEN the distinct months in silver.monthly_sales_by_sku are counted.
+THEN there are at least 12 distinct months.
 
-## Scenario 9: Sales data integrity -- required fields present
+## Scenario 9: Required fields integrity
 GIVEN sales items have key identifying fields.
-WHEN the sampled silver.fact_sales_items rows are checked.
-THEN all visible rows have non-null order_id, sku, and quantity fields.
+WHEN the silver.fact_sales_items table is analyzed for null required fields.
+THEN at least 95% of rows have non-null order_id, sku, and quantity fields.
 
-## Scenario 10: Gold snapshot freshness
-GIVEN the gold snapshot is rebuilt on each ETL run.
-WHEN the sampled gold.completed_sales_items_snapshot rows are examined.
-THEN the _snapshot_date is within the past 7 days for at least some rows.
+## Scenario 10: Price data integrity
+GIVEN sales items should have pricing data when quantities are present.
+WHEN rows with quantity > 0 are analyzed for null unit_price.
+THEN less than 1% of such rows have a null unit_price.

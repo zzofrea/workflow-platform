@@ -659,6 +659,22 @@ class TestAnalyzerNetworkIsolation:
         cmd_str = " ".join(cmd)
         assert "--dangerously-skip-permissions" not in cmd_str
 
+    def test_analyzer_allowed_tools_include_bash(self) -> None:
+        """The analyzer must have both Read and Bash tools for data analysis."""
+        from workflow_platform.two_stage_auditor import build_analyzer_cmd
+
+        cmd = build_analyzer_cmd(
+            input_dir="/tmp/input",
+            output_dir="/tmp/output",
+            service="bid-scraper",
+        )
+        cmd_str = " ".join(cmd)
+        # Analyzer gets Read,Bash -- can run Python/jq/grep on executor results
+        assert "Read,Bash" in cmd_str
+        assert "--allowedTools" in cmd
+        # Still no dangerous permissions skip
+        assert "--dangerously-skip-permissions" not in cmd_str
+
 
 # ---------------------------------------------------------------------------
 # Spec 10: Full pipeline backward compatibility
