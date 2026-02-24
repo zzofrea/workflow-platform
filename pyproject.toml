@@ -29,6 +29,9 @@ workflow-audit = "workflow_platform.auditor:main"
 workflow-orchestrate = "workflow_platform.orchestrate:main"
 workflow-health = "workflow_platform.health:main"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/workflow_platform"]
 
