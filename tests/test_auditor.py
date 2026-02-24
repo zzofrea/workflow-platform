@@ -13,6 +13,7 @@ from workflow_platform.auditor import (
     _classify_severity,
     _image_exists_locally,
     build_docker_cmd,
+    extract_allowed_hosts,
     prepare_input,
     pull_image,
     route_notifications,
@@ -38,6 +39,34 @@ class TestPrepareInput:
         assert (input_dir / "access.md").exists()
         assert (input_dir / "spec.md").read_text() == "GIVEN x.\nWHEN y.\nTHEN z."
         assert (input_dir / "access.md").read_text() == "psql -h db -U user"
+
+
+# -- Host extraction --
+
+
+class TestExtractAllowedHosts:
+    def test_extracts_single_host(self, tmp_path: Path) -> None:
+        access = tmp_path / "access.md"
+        access.write_text("## Database\n\n- Host: bid-scraper-postgres\n- Port: 5432\n")
+        assert extract_allowed_hosts(str(access)) == ["bid-scraper-postgres"]
+
+    def test_extracts_multiple_hosts(self, tmp_path: Path) -> None:
+        access = tmp_path / "access.md"
+        access.write_text("- Host: db-primary\n- Host: api-server\n")
+        assert extract_allowed_hosts(str(access)) == ["db-primary", "api-server"]
+
+    def test_case_insensitive_prefix(self, tmp_path: Path) -> None:
+        access = tmp_path / "access.md"
+        access.write_text("- host: my-db\n- HOST: my-api\n")
+        assert extract_allowed_hosts(str(access)) == ["my-db", "my-api"]
+
+    def test_returns_empty_for_no_hosts(self, tmp_path: Path) -> None:
+        access = tmp_path / "access.md"
+        access.write_text("No host lines here\n")
+        assert extract_allowed_hosts(str(access)) == []
+
+    def test_returns_empty_for_missing_file(self, tmp_path: Path) -> None:
+        assert extract_allowed_hosts(str(tmp_path / "nonexistent.md")) == []
 
 
 # -- Docker command construction --
@@ -127,6 +156,35 @@ class TestBuildDockerCmd:
         )
         name_idx = cmd.index("--name")
         assert cmd[name_idx + 1] == "auditor-etl-prod"
+
+    def test_passes_allowed_hosts_env_var(self) -> None:
+        cmd = build_docker_cmd(
+            "/tmp/input",
+            "/tmp/output",
+            service="bid-scraper",
+            allowed_hosts=["bid-scraper-postgres"],
+        )
+        env_pairs = [cmd[i + 1] for i in range(len(cmd)) if cmd[i] == "-e"]
+        assert "AUDITOR_ALLOWED_HOSTS=bid-scraper-postgres" in env_pairs
+
+    def test_passes_multiple_allowed_hosts(self) -> None:
+        cmd = build_docker_cmd(
+            "/tmp/input",
+            "/tmp/output",
+            service="test",
+            allowed_hosts=["db-host", "api-host"],
+        )
+        env_pairs = [cmd[i + 1] for i in range(len(cmd)) if cmd[i] == "-e"]
+        assert "AUDITOR_ALLOWED_HOSTS=db-host,api-host" in env_pairs
+
+    def test_empty_allowed_hosts_when_none(self) -> None:
+        cmd = build_docker_cmd(
+            "/tmp/input",
+            "/tmp/output",
+            service="test",
+        )
+        env_pairs = [cmd[i + 1] for i in range(len(cmd)) if cmd[i] == "-e"]
+        assert "AUDITOR_ALLOWED_HOSTS=" in env_pairs
 
 
 # -- Image pull logic --

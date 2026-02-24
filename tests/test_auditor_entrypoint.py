@@ -14,6 +14,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "auditor"))
 
 import entrypoint  # noqa: E402
 
+# -- Tool permission scoping --
+
+
+class TestBuildAllowedTools:
+    def test_single_host_scopes_psql_and_curl(self) -> None:
+        result = entrypoint._build_allowed_tools(["bid-scraper-postgres"])
+        assert "Bash(psql:*bid-scraper-postgres*)" in result
+        assert "Bash(curl:*bid-scraper-postgres*)" in result
+        assert "Bash(date)" in result
+        assert "Read" in result
+        # Must NOT contain wildcards for arbitrary hosts
+        assert "Bash(psql:*),Bash(curl:*)" not in result
+
+    def test_multiple_hosts(self) -> None:
+        result = entrypoint._build_allowed_tools(["db-host", "api-host"])
+        assert "Bash(psql:*db-host*)" in result
+        assert "Bash(curl:*db-host*)" in result
+        assert "Bash(psql:*api-host*)" in result
+        assert "Bash(curl:*api-host*)" in result
+
+    def test_no_hosts_only_date_and_read(self) -> None:
+        result = entrypoint._build_allowed_tools([])
+        assert result == "Bash(date),Read"
+        assert "psql" not in result
+        assert "curl" not in result
+
+
 # -- Prompt building --
 
 

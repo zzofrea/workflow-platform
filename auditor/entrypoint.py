@@ -20,6 +20,9 @@ INPUT_DIR = "/audit/input"
 OUTPUT_DIR = "/audit/output"
 AUTH_STAGING_DIR = "/audit/auth"
 
+# Default allowed hosts if none specified (empty = fully locked down)
+_DEFAULT_ALLOWED_HOSTS: list[str] = []
+
 SYSTEM_PROMPT = """\
 You are a behavioral auditor. Your job is to verify that a running service \
 satisfies its behavioral specification. You are a CLIENT auditor -- you test \
@@ -30,13 +33,15 @@ Rules:
 document describing how to reach the service (DB connection strings, API \
 endpoints, etc.).
 2. For each scenario, design your own verification approach. Query databases, \
-call APIs, or inspect endpoints as described in the access document.
+call APIs, or inspect endpoints ONLY at the hosts listed in the access document.
 3. Report ONLY observable findings with concrete evidence (actual query \
 results, HTTP responses, row counts, timestamps).
 4. NEVER modify data. Use SELECT queries only. Do not INSERT, UPDATE, DELETE, \
 or run DDL.
 5. NEVER access source code. You validate behavior, not implementation.
-6. If a scenario cannot be verified (e.g., access denied, service unreachable), \
+6. NEVER scan, probe, or connect to hosts not listed in the access document. \
+Do not enumerate network ranges, discover services, or port-scan.
+7. If a scenario cannot be verified (e.g., access denied, service unreachable), \
 report it as "error" with the reason.
 
 Output format -- respond with ONLY a JSON object (no markdown fencing, no \
@@ -113,8 +118,36 @@ def build_prompt(spec: str, access: str) -> str:
     return "\n".join(parts)
 
 
+def _build_allowed_tools(allowed_hosts: list[str]) -> str:
+    """Build a scoped --allowedTools string restricting psql/curl to declared hosts.
+
+    If allowed_hosts is empty, only Bash(date) and Read are permitted (no DB or
+    HTTP access). Each host gets explicit psql and curl rules so the auditor
+    cannot probe the broader Docker network.
+    """
+    tools: list[str] = []
+    for host in allowed_hosts:
+        # psql scoped to this host only
+        tools.append(f"Bash(psql:*{host}*)")
+        # curl scoped to this host only (for API-based services)
+        tools.append(f"Bash(curl:*{host}*)")
+    # Always allow date (for timestamp checks) and Read (for spec/access docs)
+    tools.append("Bash(date)")
+    tools.append("Read")
+    return ",".join(tools)
+
+
 def run_claude(prompt: str, model: str, max_turns: int) -> tuple[str, float]:
     """Invoke Claude CLI and return (output_text, duration_seconds)."""
+    # Parse allowed hosts from env var (comma-separated hostnames)
+    hosts_env = os.environ.get("AUDITOR_ALLOWED_HOSTS", "")
+    if hosts_env:
+        allowed_hosts = [h.strip() for h in hosts_env.split(",") if h.strip()]
+    else:
+        allowed_hosts = _DEFAULT_ALLOWED_HOSTS
+
+    allowed_tools = _build_allowed_tools(allowed_hosts)
+
     cmd = [
         "claude",
         "--print",
@@ -125,7 +158,7 @@ def run_claude(prompt: str, model: str, max_turns: int) -> tuple[str, float]:
         "--system-prompt",
         SYSTEM_PROMPT,
         "--allowedTools",
-        "Bash(psql:*),Bash(curl:*),Bash(date),Read",
+        allowed_tools,
         "--dangerously-skip-permissions",
         "--no-session-persistence",
     ]
