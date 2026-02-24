@@ -83,6 +83,10 @@ BI-optimized snapshot.
 - 8 distinct marketplaces
 - ~5,460 monthly SKU aggregation rows
 
+## Allowed URLs
+
+No HTTP endpoints are used by this service. The URL allowlist is empty. Any curl entry in a query plan for this service must be rejected by the validator.
+
 ## Service Schedule
 
 - ETL runs daily at 6:15 AM ET via `workflow-orchestrate monitor --exec` in `--catchup` mode

@@ -108,6 +108,21 @@ Execution log for each scrape run.
 | hillsborough | 747 | hillsboroughcounty.bonfirehub.com | true |
 | pasco | 702 | pascocountyfl.bonfirehub.com | true |
 
+## Allowed URLs
+
+The auditor may request these exact URLs to verify API availability.
+
+| URL | Purpose |
+|-----|---------|
+| https://hillsboroughcounty.bonfirehub.com/PublicPortal/getOpenPublicOpportunitiesSectionData | Hillsborough open opportunities |
+| https://hillsboroughcounty.bonfirehub.com/PublicPortal/getPastPublicOpportunitiesSectionData | Hillsborough past opportunities |
+| https://hillsboroughcounty.bonfirehub.com/PublicPortal/getPublicContractsSectionData | Hillsborough public contracts |
+| https://pascocountyfl.bonfirehub.com/PublicPortal/getOpenPublicOpportunitiesSectionData | Pasco open opportunities |
+| https://pascocountyfl.bonfirehub.com/PublicPortal/getPastPublicOpportunitiesSectionData | Pasco past opportunities |
+| https://pascocountyfl.bonfirehub.com/PublicPortal/getPublicContractsSectionData | Pasco public contracts |
+
+No other URLs are permitted. Any curl request not matching one of these exact URLs must be rejected by the validator.
+
 ## Service Schedule
 
 - Scraper runs daily at 5:00 AM ET via workflow-orchestrate monitor --exec
