@@ -30,11 +30,6 @@ log = structlog.get_logger("workflow_platform.two_stage_auditor")
 # Only bare SELECT * FROM <table> is allowed -- no WHERE, JOIN, subqueries, etc.
 SQL_ALLOWLIST_PATTERN = r"^SELECT \* FROM [a-zA-Z_][a-zA-Z0-9_.]*;?$"
 
-# Max characters per query result passed to the analyzer. Full tables can
-# have thousands of rows with large jsonb columns; the analyzer only needs
-# a representative sample to verify schema, data freshness, and row counts.
-MAX_RESULT_CHARS = 4000
-
 AUDITOR_IMAGE = "ghcr.io/zzofrea/workflow-auditor:latest"
 CLAUDE_AUTH_JSON = str(Path.home() / ".claude.json")
 CLAUDE_AUTH_DIR = str(Path.home() / ".claude")
@@ -148,6 +143,7 @@ def _build_stage_cmd(
     stage: str,
     *,
     model: str = "sonnet",
+    allowed_tools: str = "Read",
 ) -> list[str]:
     """Build a ``docker run`` command for a planner or analyzer stage.
 
@@ -157,12 +153,19 @@ def _build_stage_cmd(
     - Claude auth mounted read-only
     - Input mounted read-only, output mounted read-write
     - ``AUDITOR_STAGE`` env var set to planner or analyzer
-    - ``AUDITOR_ALLOWED_TOOLS=Read`` (only Read tool, no Bash)
+    - ``AUDITOR_ALLOWED_TOOLS`` set per stage (planner: Read; analyzer: Read,Bash)
     - No permission-skip flags
 
     The bridge network gives outbound internet for Claude API calls but
     does NOT connect to dokploy-network where service containers live.
     Claude cannot reach any DB or service -- only the Anthropic API.
+
+    The ``allowed_tools`` parameter controls which Claude tools are available.
+    The planner only needs Read (it reads specs and writes a JSON plan).
+    The analyzer gets Read+Bash so it can run Python/jq/grep on full
+    executor results for per-source counts, integrity checks, and
+    percentage-based thresholds. Security boundary is network isolation
+    (bridge, not dokploy-network), not tool restriction.
     """
     container_name = f"auditor-{stage}-{service}"
     return [
@@ -190,12 +193,12 @@ def _build_stage_cmd(
         "-e",
         f"AUDITOR_MODEL={model}",
         "-e",
-        "AUDITOR_ALLOWED_TOOLS=Read",
+        f"AUDITOR_ALLOWED_TOOLS={allowed_tools}",
         "-e",
         "HOME=/home/node",
         AUDITOR_IMAGE,
         "--allowedTools",
-        "Read",
+        allowed_tools,
     ]
 
 
@@ -207,7 +210,9 @@ def build_planner_cmd(
     model: str = "sonnet",
 ) -> list[str]:
     """Build the docker run command for the planner stage."""
-    return _build_stage_cmd(input_dir, output_dir, service, "planner", model=model)
+    return _build_stage_cmd(
+        input_dir, output_dir, service, "planner", model=model, allowed_tools="Read"
+    )
 
 
 def build_analyzer_cmd(
@@ -218,7 +223,9 @@ def build_analyzer_cmd(
     model: str = "sonnet",
 ) -> list[str]:
     """Build the docker run command for the analyzer stage."""
-    return _build_stage_cmd(input_dir, output_dir, service, "analyzer", model=model)
+    return _build_stage_cmd(
+        input_dir, output_dir, service, "analyzer", model=model, allowed_tools="Read,Bash"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -524,30 +531,13 @@ def run_executor(
             timeout=30,
         )
 
-    # Truncate large results so the analyzer prompt fits in context.
-    # Keep full row count for the analyzer to reference.
-    truncated: dict[str, Any] = {}
-    for key, value in results.items():
-        if isinstance(value, str):
-            total_lines = len(value.splitlines())
-            if len(value) > MAX_RESULT_CHARS:
-                # Cut at a line boundary near the limit
-                cut = value[:MAX_RESULT_CHARS].rsplit("\n", 1)[0]
-                shown_lines = len(cut.splitlines())
-                truncated[key] = (
-                    f"{cut}\n\n... truncated ({total_lines} total lines, "
-                    f"showing first {shown_lines})"
-                )
-            else:
-                truncated[key] = value
-        else:
-            truncated[key] = value
-
-    # Write results for the analyzer stage
+    # Write full results for the analyzer stage. The analyzer has Bash
+    # access and can run Python/jq/grep to process arbitrarily large
+    # result sets for per-source counts, integrity checks, etc.
     os.makedirs(output_dir, exist_ok=True)
     results_path = os.path.join(output_dir, "executor_results.json")
     with open(results_path, "w") as f:
-        json.dump(truncated, f, indent=2)
+        json.dump(results, f, indent=2)
 
     return results
 
