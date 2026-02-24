@@ -87,6 +87,26 @@ def _image_exists_locally() -> bool:
     return result.returncode == 0
 
 
+def extract_allowed_hosts(access_path: str) -> list[str]:
+    """Extract DB/service hostnames from an access document.
+
+    Scans for '- Host: <hostname>' lines in the access doc. These are the only
+    hosts the auditor container will be allowed to reach via psql/curl.
+    """
+    hosts: list[str] = []
+    try:
+        with open(access_path) as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.lower().startswith("- host:"):
+                    host = stripped.split(":", 1)[1].strip()
+                    if host:
+                        hosts.append(host)
+    except OSError:
+        log.warning("auditor.access_read_failed", path=access_path)
+    return hosts
+
+
 def prepare_input(input_dir: str, spec_path: str, access_path: str) -> None:
     """Copy spec and access docs into the container input directory."""
     shutil.copy2(spec_path, os.path.join(input_dir, "spec.md"))
@@ -102,6 +122,7 @@ def build_docker_cmd(
     model: str = "sonnet",
     max_turns: int = 20,
     network: str = "dokploy-network",
+    allowed_hosts: list[str] | None = None,
 ) -> list[str]:
     """Construct the docker run command for the auditor container."""
     container_name = f"{CONTAINER_NAME_PREFIX}-{service}-{mode}"
@@ -134,6 +155,9 @@ def build_docker_cmd(
         f"AUDITOR_SERVICE={service}",
         "-e",
         f"AUDITOR_MAX_TURNS={max_turns}",
+        # Scoped host access -- only declared DB/service hosts
+        "-e",
+        f"AUDITOR_ALLOWED_HOSTS={','.join(allowed_hosts or [])}",
         # Run as node user (Claude CLI default)
         "-e",
         "HOME=/home/node",
@@ -190,11 +214,15 @@ def run_audit(
     ):
         # Prepare input
         prepare_input(input_dir, spec_path, access_path)
+
+        # Extract allowed hosts from access doc for tool scoping
+        allowed_hosts = extract_allowed_hosts(access_path)
         log.info(
             "auditor.input_prepared",
             spec=spec_path,
             access=access_path,
             input_dir=input_dir,
+            allowed_hosts=allowed_hosts,
         )
 
         # Build docker command
@@ -206,6 +234,7 @@ def run_audit(
             model=model,
             max_turns=max_turns,
             network=network,
+            allowed_hosts=allowed_hosts,
         )
 
         container_name = f"{CONTAINER_NAME_PREFIX}-{service}-{mode}"
