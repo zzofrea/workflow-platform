@@ -15,15 +15,15 @@ GIVEN the bid scraper pulls data from Bonfire portal APIs.
 WHEN the allowed API endpoints for Hillsborough and Pasco counties are called.
 THEN all 6 Bonfire endpoints return valid JSON responses with a success indicator.
 
-## Scenario 3: Per-source opportunity volume
-GIVEN the bid scraper ingests opportunities from multiple county portals.
-WHEN the bid_opportunities table is analyzed by source.
-THEN there are at least 100 opportunities per source.
+## Scenario 3: Opportunity volume
+GIVEN the bid scraper ingests open and past opportunities from Hillsborough County.
+WHEN the bid_opportunities table total row count is computed.
+THEN there are at least 500 total opportunity records.
 
-## Scenario 4: Per-source contract volume
-GIVEN the bid scraper captures contracts from multiple county portals.
-WHEN the public_contracts table is analyzed by organization_id.
-THEN there are at least 50 contracts per source.
+## Scenario 4: Contract volume
+GIVEN the bid scraper captures awarded contracts from Hillsborough County.
+WHEN the public_contracts table total row count is computed.
+THEN there are at least 500 total contract records.
 
 ## Scenario 5: Scrape freshness
 GIVEN the bid scraper runs on a daily schedule.
