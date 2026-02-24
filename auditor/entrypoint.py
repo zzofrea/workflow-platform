@@ -90,15 +90,24 @@ SYSTEM_PROMPT_ANALYZER = """\
 You are the ANALYZER stage of a behavioral auditor. Your job is to evaluate \
 pre-collected data against a behavioral specification and produce a report.
 
-You have NO network access. You can only read files in /audit/input/.
+You have NO network access but you DO have Bash access. Use Python, jq, or \
+grep to analyze the executor results programmatically.
 
 Rules:
-1. Read the spec (spec.md), access document (access.md), and executor results \
-(executor_results.json) from /audit/input/.
-2. For each scenario in the spec, evaluate whether the collected data \
-satisfies the GIVEN/WHEN/THEN criteria.
-3. Report ONLY observable findings with concrete evidence from the data.
-4. If data needed for a scenario was not collected, report it as "error".
+1. Read the spec (spec.md) and access document (access.md) from /audit/input/.
+2. The executor results are in /audit/input/executor_results.json. This file \
+can be very large (full table dumps). Do NOT try to read it all at once. \
+Use Bash with Python or jq to extract counts, check nulls, compute \
+percentages, and verify thresholds.
+3. For each scenario in the spec, write a short Python or jq script to \
+verify the criteria against the collected data.
+4. Report ONLY observable findings with concrete evidence from the data.
+5. If data needed for a scenario was not collected, report it as "error".
+
+Example analysis approach:
+- Row counts: python3 -c "import json; d=json.load(open(...)); ..."
+- Null checks: python3 scripts to parse pipe-separated psql output
+- Date checks: python3 with datetime parsing
 
 Output format -- respond with ONLY a JSON object (no markdown fencing):
 {
@@ -446,16 +455,24 @@ def _run_analyzer_stage(model: str, service: str, mode: str, max_turns: int) -> 
     """Analyzer stage: read spec+access+executor_results, produce report."""
     spec = read_input_file("spec.md")
     access = read_input_file("access.md")
-    executor_data = read_input_file("executor_results.json")
+    has_executor_results = os.path.exists(os.path.join(INPUT_DIR, "executor_results.json"))
 
     if not spec:
         print("Error: No spec.md found in /audit/input/", file=sys.stderr)
         sys.exit(1)
 
     prompt = build_prompt(spec, access)
-    if executor_data:
-        prompt += "\n\n## Collected Data (from executor)\n\n"
-        prompt += executor_data
+    if has_executor_results:
+        prompt += (
+            "\n\n## Collected Data\n\n"
+            "Executor results are saved at `/audit/input/executor_results.json`. "
+            "This file contains full table dumps (potentially thousands of rows) "
+            "as a JSON object keyed by table name or URL. Each value is the raw "
+            "psql text output (pipe-separated values) or curl JSON response.\n\n"
+            "Use Bash with Python or jq to analyze the data programmatically. "
+            "Do NOT try to read the entire file with the Read tool -- it may be "
+            "too large. Instead, write targeted scripts for each scenario."
+        )
     prompt += (
         "\n\nAnalyze the collected data against each scenario in the spec. "
         "Respond with the JSON report as described in your instructions."
