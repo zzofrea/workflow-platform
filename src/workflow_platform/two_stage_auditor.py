@@ -30,6 +30,11 @@ log = structlog.get_logger("workflow_platform.two_stage_auditor")
 # Only bare SELECT * FROM <table> is allowed -- no WHERE, JOIN, subqueries, etc.
 SQL_ALLOWLIST_PATTERN = r"^SELECT \* FROM [a-zA-Z_][a-zA-Z0-9_.]*;?$"
 
+# Max characters per query result passed to the analyzer. Full tables can
+# have thousands of rows with large jsonb columns; the analyzer only needs
+# a representative sample to verify schema, data freshness, and row counts.
+MAX_RESULT_CHARS = 4000
+
 AUDITOR_IMAGE = "ghcr.io/zzofrea/workflow-auditor:latest"
 CLAUDE_AUTH_JSON = str(Path.home() / ".claude.json")
 CLAUDE_AUTH_DIR = str(Path.home() / ".claude")
@@ -147,13 +152,17 @@ def _build_stage_cmd(
     """Build a ``docker run`` command for a planner or analyzer stage.
 
     Both stages share the same structure:
-    - ``--network none`` (no network access)
+    - ``--network bridge`` (Anthropic API only, NOT dokploy-network)
     - ``--cap-drop ALL`` (minimal capabilities)
     - Claude auth mounted read-only
     - Input mounted read-only, output mounted read-write
     - ``AUDITOR_STAGE`` env var set to planner or analyzer
     - ``AUDITOR_ALLOWED_TOOLS=Read`` (only Read tool, no Bash)
     - No permission-skip flags
+
+    The bridge network gives outbound internet for Claude API calls but
+    does NOT connect to dokploy-network where service containers live.
+    Claude cannot reach any DB or service -- only the Anthropic API.
     """
     container_name = f"auditor-{stage}-{service}"
     return [
@@ -163,7 +172,7 @@ def _build_stage_cmd(
         "--name",
         container_name,
         "--network",
-        "none",
+        "bridge",
         "--cap-drop",
         "ALL",
         "-v",
@@ -270,6 +279,93 @@ def validate_query_plan(plan: dict[str, Any], access_path: str) -> ValidationRes
 
 
 # ---------------------------------------------------------------------------
+# Container name resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_container_names(hostnames: set[str]) -> dict[str, str]:
+    """Resolve Docker DNS hostnames to actual container names.
+
+    On dokploy-network, containers are addressable by hostname or alias
+    (e.g., ``bid-scraper-postgres``), but ``docker network connect``
+    requires the real container name (e.g.,
+    ``compose-bypass-solid-state-feed-6p6e3c-postgres-1``).
+
+    Returns a dict mapping hostname -> container name. Falls back to the
+    hostname itself if resolution fails (which will error at connect time).
+    """
+    if not hostnames:
+        return {}
+
+    mapping: dict[str, str] = {}
+
+    # Get all containers on dokploy-network with their names and aliases
+    result = subprocess.run(
+        [
+            "docker",
+            "network",
+            "inspect",
+            "dokploy-network",
+            "--format",
+            "{{range .Containers}}{{.Name}} {{end}}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    if result.returncode != 0:
+        log.warning("two_stage.network_inspect_failed", stderr=result.stderr[:500])
+        return {h: h for h in hostnames}
+
+    # For each container on the network, check if its hostname or aliases
+    # match any of the target hostnames
+    containers = result.stdout.strip().split()
+    for container in containers:
+        if not container:
+            continue
+
+        # Check container's configured hostname
+        hostname_result = subprocess.run(
+            ["docker", "inspect", container, "--format", "{{.Config.Hostname}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if hostname_result.returncode == 0:
+            ctr_hostname = hostname_result.stdout.strip()
+            if ctr_hostname in hostnames:
+                mapping[ctr_hostname] = container
+
+        # Check network aliases on dokploy-network
+        alias_result = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                container,
+                "--format",
+                '{{index .NetworkSettings.Networks "dokploy-network" "Aliases"}}',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if alias_result.returncode == 0:
+            # Format: [alias1 alias2 ...]
+            aliases_str = alias_result.stdout.strip().strip("[]")
+            for alias in aliases_str.split():
+                if alias in hostnames:
+                    mapping[alias] = container
+
+    # Fall back to hostname for anything unresolved
+    for h in hostnames:
+        if h not in mapping:
+            mapping[h] = h
+
+    return mapping
+
+
+# ---------------------------------------------------------------------------
 # Executor
 # ---------------------------------------------------------------------------
 
@@ -298,6 +394,11 @@ def run_executor(
         if entry.get("type") == "psql":
             target_hosts.add(entry["host"])
 
+    # Resolve Docker DNS hostnames to actual container names.
+    # On dokploy-network, containers are reachable by hostname/alias
+    # but `docker network connect` requires the real container name.
+    host_to_container = _resolve_container_names(target_hosts)
+
     try:
         # Create temporary network
         subprocess.run(
@@ -308,10 +409,21 @@ def run_executor(
             check=True,
         )
 
-        # Connect target DB containers to temp network
+        # Connect target DB containers to temp network with their
+        # hostname as an alias so psql can resolve them by the same name.
         for host in target_hosts:
+            container = host_to_container.get(host, host)
+            connect_cmd = [
+                "docker",
+                "network",
+                "connect",
+                "--alias",
+                host,
+                net_name,
+                container,
+            ]
             subprocess.run(
-                ["docker", "network", "connect", net_name, host],
+                connect_cmd,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -398,8 +510,9 @@ def run_executor(
     finally:
         # Always clean up: disconnect hosts then remove network
         for host in target_hosts:
+            container = host_to_container.get(host, host)
             subprocess.run(
-                ["docker", "network", "disconnect", net_name, host],
+                ["docker", "network", "disconnect", net_name, container],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -411,11 +524,30 @@ def run_executor(
             timeout=30,
         )
 
+    # Truncate large results so the analyzer prompt fits in context.
+    # Keep full row count for the analyzer to reference.
+    truncated: dict[str, Any] = {}
+    for key, value in results.items():
+        if isinstance(value, str):
+            total_lines = len(value.splitlines())
+            if len(value) > MAX_RESULT_CHARS:
+                # Cut at a line boundary near the limit
+                cut = value[:MAX_RESULT_CHARS].rsplit("\n", 1)[0]
+                shown_lines = len(cut.splitlines())
+                truncated[key] = (
+                    f"{cut}\n\n... truncated ({total_lines} total lines, "
+                    f"showing first {shown_lines})"
+                )
+            else:
+                truncated[key] = value
+        else:
+            truncated[key] = value
+
     # Write results for the analyzer stage
     os.makedirs(output_dir, exist_ok=True)
     results_path = os.path.join(output_dir, "executor_results.json")
     with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(truncated, f, indent=2)
 
     return results
 
