@@ -2,88 +2,80 @@
 
 ## Database
 
-- Host: bid-scraper-postgres
+- Host: gov-bid-postgres
 - Port: 5432
-- Database: bidscraper
+- Database: govbids
 - User: auditor_ro
 - Password: auditor_ro_readonly
 
 Connection command:
 ```
-PGPASSWORD=auditor_ro_readonly psql -h bid-scraper-postgres -p 5432 -U auditor_ro -d bidscraper
+PGPASSWORD=auditor_ro_readonly psql -h gov-bid-postgres -p 5432 -U auditor_ro -d govbids
 ```
 
 ## Tables
 
-### sources
-Configured scrape targets.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| source_id | text PK | e.g. "hillsborough", "pasco" |
-| org_id | text | Bonfire org identifier |
-| portal_host | text | e.g. "hillsboroughcounty.bonfirehub.com" |
-| enabled | boolean | Whether source is actively scraped |
-| last_scraped_at | timestamptz | Last successful scrape time |
-| created_at | timestamptz | Row creation time |
-
-### opportunities
+### bid_opportunities
 Procurement listings scraped from Bonfire portals.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| id | serial PK | Auto-increment |
-| source_id | text FK→sources | Which portal |
-| project_id | text | Bonfire project ID |
+| project_id | text PK | Bonfire project ID |
+| reference_id | text | Bonfire reference ID |
 | project_name | text | Listing title |
-| date_close | timestamptz | Bid deadline |
-| status_id | smallint | Bonfire status code |
-| is_public_award | boolean | Public award flag |
-| description | text | Full description |
-| solicitation_type | text | e.g. "RFP", "ITB" |
+| status_id | text | Bonfire status code |
+| sub_status_id | text | Sub-status |
+| department_id | text | Department |
+| close_date | timestamptz | Bid deadline |
+| source | text | "openOpportunities" or "pastOpportunities" |
+| content_hash | text | Hash for change detection |
 | first_seen_at | timestamptz | When scraper first found it |
-| last_seen_at | timestamptz | Most recent scrape that saw it |
-| detail_scraped_at | timestamptz | When detail page was scraped |
-| created_at | timestamptz | Row creation |
-| updated_at | timestamptz | Last update |
+| last_updated | timestamptz | Last update time |
+| raw_data | jsonb | Full API response |
 
-Unique constraint: (source_id, project_id)
-
-### contracts
+### public_contracts
 Awarded contracts from Bonfire portals.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| id | serial PK | Auto-increment |
-| source_id | text FK→sources | Which portal |
-| contract_id | text | Bonfire contract ID |
-| vendor_id | text | Vendor reference |
+| contract_id | text PK | Bonfire contract ID |
 | name | text | Contract title |
-| status_id | smallint | Contract status code |
+| vendor_id | text | Vendor reference |
+| vendor_name | text | Vendor name |
+| department_id | text | Department |
+| organization_id | text | Organization |
+| contract_status_id | text | Contract status code |
+| is_extendable | boolean | Whether contract is extendable |
 | start_date | timestamptz | Contract start |
 | end_date | timestamptz | Contract end |
+| content_hash | text | Hash for change detection |
 | first_seen_at | timestamptz | When scraper first found it |
-| last_seen_at | timestamptz | Most recent scrape |
-| created_at | timestamptz | Row creation |
-| updated_at | timestamptz | Last update |
-
-Unique constraint: (source_id, contract_id)
+| last_updated | timestamptz | Last update time |
+| raw_data | jsonb | Full API response |
 
 ### vendors
 Vendor records from Bonfire portals.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| id | serial PK | Auto-increment |
-| source_id | text FK→sources | Which portal |
-| vendor_id | text | Bonfire vendor ID |
-| company_name | text | Vendor company name |
+| vendor_id | text PK | Bonfire vendor ID |
+| vendor_name | text | Vendor company name |
 | first_seen_at | timestamptz | When scraper first found it |
-| last_seen_at | timestamptz | Most recent scrape |
-| created_at | timestamptz | Row creation |
-| updated_at | timestamptz | Last update |
+| last_updated | timestamptz | Last update time |
+| raw_data | jsonb | Full API response |
 
-Unique constraint: (source_id, vendor_id)
+### document_takers
+Companies that downloaded bid documents for an opportunity.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | serial PK | Auto-increment |
+| project_id | text FK->bid_opportunities | Which opportunity |
+| vendor_name | text | Company that took documents |
+| first_seen_at | timestamptz | When first seen |
+| last_updated | timestamptz | Last update time |
+
+Unique constraint: (project_id, vendor_name)
 
 ### scrape_runs
 Execution log for each scrape run.
@@ -91,22 +83,29 @@ Execution log for each scrape run.
 | Column | Type | Notes |
 |--------|------|-------|
 | id | serial PK | Auto-increment |
-| source_id | text FK→sources | Which portal was scraped |
 | started_at | timestamptz | Run start time |
 | finished_at | timestamptz | Run end time |
 | status | text | "running", "success", "failed" |
-| records_found | jsonb | Count of records discovered |
-| records_upserted | jsonb | Count of records inserted/updated |
-| records_changed | jsonb | Count of records that changed |
-| errors | jsonb | Array of error objects (empty [] on success) |
-| duration_ms | integer | Run duration in milliseconds |
+| phase | text | Which scrape phase |
+| records_processed | integer | Count processed |
+| records_new | integer | Count new records |
+| records_updated | integer | Count updated records |
+| error_message | text | Error details if failed |
+| summary | jsonb | Run summary data |
 
-## Current Sources
+### contract_opportunity_map
+Links contracts to opportunities they were awarded from.
 
-| source_id | org_id | portal_host | enabled |
-|-----------|--------|-------------|---------|
-| hillsborough | 747 | hillsboroughcounty.bonfirehub.com | true |
-| pasco | 702 | pascocountyfl.bonfirehub.com | true |
+| Column | Type | Notes |
+|--------|------|-------|
+| id | serial PK | Auto-increment |
+| contract_id | text | Contract reference |
+| opportunity_project_id | text FK->bid_opportunities | Opportunity reference |
+| match_method | match_method | How the match was determined |
+| confidence | real | Match confidence 0.0-1.0 |
+| created_at | timestamptz | When mapping was created |
+
+Unique constraint: (contract_id, opportunity_project_id, match_method)
 
 ## Allowed URLs
 
@@ -127,4 +126,4 @@ No other URLs are permitted. Any curl request not matching one of these exact UR
 
 - Scraper runs daily at 5:00 AM ET via workflow-orchestrate monitor --exec
 - Container: compose-bypass-solid-state-feed-6p6e3c-scraper-1
-- Docker hostname on dokploy-network: bid-scraper-postgres (DB), bid-scraper-scraper (app)
+- Docker hostname on dokploy-network: gov-bid-postgres (DB), bid-scraper-scraper (app)

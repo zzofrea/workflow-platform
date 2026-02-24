@@ -115,10 +115,10 @@ def _curl_entry(url: str) -> dict[str, str]:
 
 
 class TestPlannerNetworkIsolation:
-    """Spec 1: The planner container must run with --network none."""
+    """Spec 1: The planner container must NOT be on dokploy-network."""
 
-    def test_planner_container_uses_network_none(self) -> None:
-        """The docker run command for the planner stage must include --network none."""
+    def test_planner_container_uses_bridge_not_dokploy(self) -> None:
+        """The planner uses bridge network (API access) but never dokploy-network."""
         from workflow_platform.two_stage_auditor import build_planner_cmd
 
         cmd = build_planner_cmd(
@@ -128,7 +128,9 @@ class TestPlannerNetworkIsolation:
         )
         assert "--network" in cmd
         net_idx = cmd.index("--network")
-        assert cmd[net_idx + 1] == "none"
+        assert cmd[net_idx + 1] == "bridge"
+        cmd_str = " ".join(cmd)
+        assert "dokploy-network" not in cmd_str
 
     def test_planner_does_not_use_dangerously_skip_permissions(self) -> None:
         """The planner must NOT use --dangerously-skip-permissions."""
@@ -534,8 +536,14 @@ class TestExecutorNetworkIsolation:
 
         run_executor(plan, credentials, output_dir="/tmp/output")
 
-        all_calls_str = " ".join(str(c) for c in mock_run.call_args_list)
-        assert "dokploy-network" not in all_calls_str
+        # The resolver reads dokploy-network metadata, but the executor
+        # must never connect to or create containers on dokploy-network.
+        for c in mock_run.call_args_list:
+            args = c[0][0] if c[0] else c[1].get("args", [])
+            if isinstance(args, list) and "network" in args and "connect" in args:
+                assert "dokploy-network" not in args, (
+                    "Executor must not connect containers to dokploy-network"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -551,8 +559,9 @@ class TestExecutorFailFast:
         """When the database is unreachable, the executor fails immediately."""
         from workflow_platform.two_stage_auditor import ExecutorError, run_executor
 
-        # Network create succeeds, network connect succeeds, query fails, cleanup succeeds
+        # Resolver inspect, then: network create, connect, query fails, cleanup
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=""),  # resolver: network inspect
             MagicMock(returncode=0),  # network create
             MagicMock(returncode=0),  # network connect target
             MagicMock(returncode=2, stderr="connection refused"),  # psql fails
@@ -582,7 +591,9 @@ class TestExecutorFailFast:
         """The temp network is removed even when queries fail."""
         from workflow_platform.two_stage_auditor import ExecutorError, run_executor
 
+        # Resolver inspect, then: network create, connect, query fails, cleanup
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=""),  # resolver: network inspect
             MagicMock(returncode=0),  # network create
             MagicMock(returncode=0),  # network connect target
             MagicMock(returncode=2, stderr="connection refused"),  # psql fails
@@ -619,10 +630,10 @@ class TestExecutorFailFast:
 
 
 class TestAnalyzerNetworkIsolation:
-    """Spec 9: The analyzer container must run with --network none."""
+    """Spec 9: The analyzer container must NOT be on dokploy-network."""
 
-    def test_analyzer_container_uses_network_none(self) -> None:
-        """The docker run command for the analyzer stage must include --network none."""
+    def test_analyzer_container_uses_bridge_not_dokploy(self) -> None:
+        """The analyzer uses bridge network (API access) but never dokploy-network."""
         from workflow_platform.two_stage_auditor import build_analyzer_cmd
 
         cmd = build_analyzer_cmd(
@@ -632,7 +643,9 @@ class TestAnalyzerNetworkIsolation:
         )
         assert "--network" in cmd
         net_idx = cmd.index("--network")
-        assert cmd[net_idx + 1] == "none"
+        assert cmd[net_idx + 1] == "bridge"
+        cmd_str = " ".join(cmd)
+        assert "dokploy-network" not in cmd_str
 
     def test_analyzer_does_not_use_dangerously_skip_permissions(self) -> None:
         """The analyzer must NOT use --dangerously-skip-permissions."""
