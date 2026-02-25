@@ -11,10 +11,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -323,6 +325,494 @@ def run_audit(
             route_notifications(report)
 
         return report
+
+
+# ---------------------------------------------------------------------------
+# Auditor v2: temp-network bridge with direct DB access
+# ---------------------------------------------------------------------------
+
+ALLOWED_TOOLS_V2 = "Read,Bash(psql*),Bash(python3*),Bash(date*)"
+
+
+def _parse_credentials(access_path: str) -> dict[str, str]:
+    """Extract DB credentials from an access document.
+
+    Returns a flat dict with host/port/database/user/password keys.
+    If password contains "none" or "trust" (case-insensitive), it is
+    treated as empty (trust authentication).
+    """
+    creds: dict[str, str] = {}
+    try:
+        with open(access_path) as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.lower().startswith("- host:"):
+                    creds["host"] = stripped.split(":", 1)[1].strip()
+                elif stripped.lower().startswith("- port:"):
+                    creds["port"] = stripped.split(":", 1)[1].strip()
+                elif stripped.lower().startswith("- database:"):
+                    creds["database"] = stripped.split(":", 1)[1].strip()
+                elif stripped.lower().startswith("- user:"):
+                    creds["user"] = stripped.split(":", 1)[1].strip()
+                elif stripped.lower().startswith("- password:"):
+                    raw_pw = stripped.split(":", 1)[1].strip()
+                    # Trust auth: password field says "none" or "trust"
+                    if re.search(r"\b(none|trust)\b", raw_pw, re.IGNORECASE):
+                        creds["password"] = ""
+                    else:
+                        creds["password"] = raw_pw
+    except OSError:
+        log.warning("auditor.creds_read_failed", path=access_path)
+
+    return creds
+
+
+def _resolve_container_names(hostnames: set[str]) -> dict[str, str]:
+    """Resolve Docker DNS hostnames to actual container names.
+
+    On dokploy-network, containers are addressable by hostname or alias
+    (e.g., ``gov-bid-postgres``), but ``docker network connect``
+    requires the real container name (e.g.,
+    ``compose-bypass-solid-state-feed-6p6e3c-postgres-1``).
+
+    Returns a dict mapping hostname -> container name. Falls back to the
+    hostname itself if resolution fails (which will error at connect time).
+    """
+    if not hostnames:
+        return {}
+
+    mapping: dict[str, str] = {}
+
+    # Get all containers on dokploy-network with their names
+    result = subprocess.run(
+        [
+            "docker",
+            "network",
+            "inspect",
+            "dokploy-network",
+            "--format",
+            "{{range .Containers}}{{.Name}} {{end}}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    if result.returncode != 0:
+        log.warning("auditor.network_inspect_failed", stderr=result.stderr[:500])
+        return {h: h for h in hostnames}
+
+    # For each container on the network, check if its hostname or aliases
+    # match any of the target hostnames
+    containers = result.stdout.strip().split()
+    for container in containers:
+        if not container:
+            continue
+
+        # Check container's configured hostname
+        hostname_result = subprocess.run(
+            ["docker", "inspect", container, "--format", "{{.Config.Hostname}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if hostname_result.returncode == 0:
+            ctr_hostname = hostname_result.stdout.strip()
+            if ctr_hostname in hostnames:
+                mapping[ctr_hostname] = container
+
+        # Check network aliases on dokploy-network
+        alias_result = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                container,
+                "--format",
+                '{{index .NetworkSettings.Networks "dokploy-network" "Aliases"}}',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if alias_result.returncode == 0:
+            aliases_str = alias_result.stdout.strip().strip("[]")
+            for alias in aliases_str.split():
+                if alias in hostnames:
+                    mapping[alias] = container
+
+    # Fall back to hostname for anything unresolved
+    for h in hostnames:
+        if h not in mapping:
+            mapping[h] = h
+
+    return mapping
+
+
+def _check_db_running(container_name: str) -> bool:
+    """Check if a Docker container is running via docker inspect."""
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _build_v2_docker_cmd(
+    input_dir: str,
+    output_dir: str,
+    *,
+    service: str,
+    mode: str = "prod",
+    model: str = "sonnet",
+    max_turns: int = 50,
+    network: str,
+    creds: dict[str, str],
+) -> list[str]:
+    """Construct the docker run command for the v2 auditor container.
+
+    Uses a temporary network (not dokploy-network), passes PG connection
+    details via standard libpq env vars, and scopes tools to psql/python3/date.
+    """
+    container_name = f"{CONTAINER_NAME_PREFIX}-{service}-{mode}"
+
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        container_name,
+        "--network",
+        network,
+        "--cap-drop",
+        "ALL",
+        # Mount Claude auth to staging dir (read-only, copied to home at startup)
+        "-v",
+        f"{CLAUDE_AUTH_JSON}:/audit/auth/.claude.json:ro",
+        "-v",
+        f"{CLAUDE_AUTH_DIR}:/audit/auth/.claude:ro",
+        # Mount input (read-only)
+        "-v",
+        f"{input_dir}:/audit/input:ro",
+        # Mount output (read-write)
+        "-v",
+        f"{output_dir}:/audit/output:rw",
+        # Environment variables
+        "-e",
+        f"AUDITOR_STAGE=v2",
+        "-e",
+        f"AUDITOR_MODE={mode}",
+        "-e",
+        f"AUDITOR_MODEL={model}",
+        "-e",
+        f"AUDITOR_SERVICE={service}",
+        "-e",
+        f"AUDITOR_MAX_TURNS={max_turns}",
+        # Standard libpq env vars for psql
+        "-e",
+        f"PGHOST={creds.get('host', '')}",
+        "-e",
+        f"PGPORT={creds.get('port', '5432')}",
+        "-e",
+        f"PGUSER={creds.get('user', '')}",
+        "-e",
+        f"PGDATABASE={creds.get('database', '')}",
+    ]
+
+    # Only set PGPASSWORD if there's an actual password (trust auth omits it)
+    password = creds.get("password", "")
+    if password:
+        cmd.extend(["-e", f"PGPASSWORD={password}"])
+
+    cmd.extend(
+        [
+            "-e",
+            "HOME=/home/node",
+            AUDITOR_IMAGE,
+        ]
+    )
+
+    return cmd
+
+
+def run_audit_v2(
+    spec_path: str,
+    access_path: str,
+    service: str,
+    mode: str,
+    *,
+    archive_dir: str | None = None,
+    notify: bool = True,
+    model: str = "sonnet",
+    max_turns: int = 50,
+    total_timeout: int = 300,
+) -> dict[str, Any]:
+    """Run a v2 audit: temp network bridge + single Claude auditor with direct DB access.
+
+    Creates a temporary Docker network, connects the target DB container to it,
+    launches the auditor container with PG env vars, collects the report, and
+    cleans up the network.
+
+    Args:
+        total_timeout: Max seconds for the auditor container before it is killed.
+            Defaults to 300 (5 minutes).
+
+    Returns the parsed report dict.
+    """
+    # Ensure the auditor image is available
+    if not _image_exists_locally():
+        log.info("auditor.image_missing_locally", image=AUDITOR_IMAGE)
+        if not pull_image():
+            log.error("auditor.image_unavailable", image=AUDITOR_IMAGE)
+            return {
+                "overall": "error",
+                "service": service,
+                "mode": mode,
+                "summary": f"Could not pull auditor image: {AUDITOR_IMAGE}",
+                "scenarios": [],
+            }
+
+    # Validate inputs exist
+    if not os.path.isfile(spec_path):
+        log.error("auditor.spec_not_found", path=spec_path)
+        return {
+            "overall": "error",
+            "service": service,
+            "mode": mode,
+            "summary": f"Spec file not found: {spec_path}",
+            "scenarios": [],
+        }
+    if not os.path.isfile(access_path):
+        log.error("auditor.access_not_found", path=access_path)
+        return {
+            "overall": "error",
+            "service": service,
+            "mode": mode,
+            "summary": f"Access file not found: {access_path}",
+            "scenarios": [],
+        }
+
+    # Parse credentials from access doc
+    creds = _parse_credentials(access_path)
+    hostname = creds.get("host", "")
+    if not hostname:
+        return {
+            "overall": "error",
+            "service": service,
+            "mode": mode,
+            "summary": "No database hostname found in access document",
+            "scenarios": [],
+        }
+
+    # Resolve hostname to actual Docker container name
+    host_to_container = _resolve_container_names({hostname})
+    container_name = host_to_container.get(hostname, hostname)
+
+    # Check DB container is running (fail early)
+    if not _check_db_running(container_name):
+        report: dict[str, Any] = {
+            "overall": "error",
+            "service": service,
+            "mode": mode,
+            "summary": f"Database container '{container_name}' is not running",
+            "scenarios": [],
+        }
+        report_dir = archive_dir or _report_archive_dir(service, mode)
+        os.makedirs(report_dir, exist_ok=True)
+        with open(os.path.join(report_dir, "report.json"), "w") as f:
+            json.dump(report, f, indent=2)
+        if notify:
+            route_notifications(report)
+        return report
+
+    # Create temp network
+    net_name = f"audit-{service}-{uuid.uuid4().hex[:12]}"
+    auditor_container = f"{CONTAINER_NAME_PREFIX}-{service}-{mode}"
+
+    try:
+        # Create temporary network
+        subprocess.run(
+            ["docker", "network", "create", net_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        log.info("auditor.network_created", network=net_name)
+
+        # Connect DB to temp network with hostname alias
+        subprocess.run(
+            [
+                "docker",
+                "network",
+                "connect",
+                "--alias",
+                hostname,
+                net_name,
+                container_name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        log.info(
+            "auditor.db_connected",
+            network=net_name,
+            container=container_name,
+            alias=hostname,
+        )
+
+        # Create temp directories for input/output
+        with (
+            tempfile.TemporaryDirectory(prefix="auditor-input-") as input_dir,
+            tempfile.TemporaryDirectory(prefix="auditor-output-") as output_dir,
+        ):
+            # Prepare input
+            prepare_input(input_dir, spec_path, access_path)
+
+            # Build docker command
+            cmd = _build_v2_docker_cmd(
+                input_dir,
+                output_dir,
+                service=service,
+                mode=mode,
+                model=model,
+                max_turns=max_turns,
+                network=net_name,
+                creds=creds,
+            )
+
+            log.info(
+                "auditor.container_starting",
+                service=service,
+                mode=mode,
+                model=model,
+                network=net_name,
+            )
+            print(f"Starting auditor v2: service={service} mode={mode} model={model}")
+
+            # Run the container with timeout
+            timed_out = False
+            result = subprocess.CompletedProcess(args=[], returncode=-1, stdout="", stderr="")
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=total_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                log.warning(
+                    "auditor.timeout",
+                    service=service,
+                    timeout_seconds=total_timeout,
+                )
+                print(f"Auditor timed out after {total_timeout}s -- killing container")
+                subprocess.run(
+                    ["docker", "kill", auditor_container],
+                    capture_output=True,
+                    timeout=30,
+                )
+                subprocess.run(
+                    ["docker", "rm", "-f", auditor_container],
+                    capture_output=True,
+                    timeout=30,
+                )
+
+            if not timed_out:
+                if result.stdout:
+                    print(result.stdout)
+                if result.stderr:
+                    print(result.stderr, file=sys.stderr)
+
+            # Collect report
+            report_json_path = os.path.join(output_dir, "report.json")
+            report_md_path = os.path.join(output_dir, "report.md")
+
+            report = {}
+            if timed_out:
+                report = {
+                    "mode": mode,
+                    "service": service,
+                    "overall": "error",
+                    "summary": f"Auditor timed out after {total_timeout} seconds",
+                    "scenarios": [],
+                }
+            elif os.path.exists(report_json_path):
+                with open(report_json_path) as f:
+                    report = json.load(f)
+                log.info(
+                    "auditor.report_collected",
+                    overall=report.get("overall"),
+                    scenarios=report.get("scenarios_total"),
+                )
+            else:
+                raw_stdout = result.stdout[:5000] if not timed_out else ""
+                report = {
+                    "mode": mode,
+                    "service": service,
+                    "overall": "error",
+                    "summary": "No report produced by auditor container",
+                    "scenarios": [],
+                    "raw_output": raw_stdout,
+                }
+                log.error("auditor.no_report", stdout=raw_stdout[:500])
+
+            # Archive report
+            report_dir = archive_dir or _report_archive_dir(service, mode)
+            os.makedirs(report_dir, exist_ok=True)
+            with open(os.path.join(report_dir, "report.json"), "w") as f:
+                json.dump(report, f, indent=2)
+            if os.path.exists(report_md_path):
+                shutil.copy2(report_md_path, os.path.join(report_dir, "report.md"))
+
+            print(f"Report archived to {report_dir}/")
+
+            # Route notifications
+            if notify:
+                route_notifications(report)
+
+            return report
+
+    except subprocess.CalledProcessError as exc:
+        log.error(
+            "auditor.network_setup_failed",
+            network=net_name,
+            error=str(exc),
+        )
+        report = {
+            "overall": "error",
+            "service": service,
+            "mode": mode,
+            "summary": f"Network setup failed: {exc}",
+            "scenarios": [],
+        }
+        report_dir = archive_dir or _report_archive_dir(service, mode)
+        os.makedirs(report_dir, exist_ok=True)
+        with open(os.path.join(report_dir, "report.json"), "w") as f:
+            json.dump(report, f, indent=2)
+        if notify:
+            route_notifications(report)
+        return report
+
+    finally:
+        # Always clean up: disconnect DB from temp network, remove temp network
+        subprocess.run(
+            ["docker", "network", "disconnect", net_name, container_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["docker", "network", "rm", net_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        log.info("auditor.network_cleaned", network=net_name)
 
 
 def _report_archive_dir(service: str, mode: str) -> str:
