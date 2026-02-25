@@ -139,6 +139,7 @@ def run_claude(prompt: str, model: str, max_turns: int) -> tuple[str, float]:
         "--allowedTools",
         allowed_tools,
         "--no-session-persistence",
+        "--dangerously-skip-permissions",
     ]
 
     if max_turns > 0:
