@@ -94,6 +94,7 @@ def prepare_input(input_dir: str, spec_path: str, access_path: str) -> None:
     shutil.copy2(spec_path, os.path.join(input_dir, "spec.md"))
     shutil.copy2(access_path, os.path.join(input_dir, "access.md"))
 
+
 ALLOWED_TOOLS_V2 = "Read,Bash(psql*),Bash(python3*),Bash(date*)"
 
 
@@ -263,7 +264,7 @@ def _build_docker_cmd(
         f"{output_dir}:/audit/output:rw",
         # Environment variables
         "-e",
-        f"AUDITOR_STAGE=v2",
+        "AUDITOR_STAGE=v2",
         "-e",
         f"AUDITOR_MODE={mode}",
         "-e",
@@ -668,7 +669,9 @@ def main() -> None:
     run_parser.add_argument("--mode", default="prod", choices=["build", "prod"], help="Audit mode")
     run_parser.add_argument("--model", default="sonnet", help="Claude model (sonnet or opus)")
     run_parser.add_argument("--max-turns", type=int, default=50, help="Max Claude CLI turns")
-    run_parser.add_argument("--timeout", type=int, default=300, help="Max seconds for auditor (default: 300)")
+    run_parser.add_argument(
+        "--timeout", type=int, default=300, help="Max seconds for auditor (default: 300)"
+    )
     run_parser.add_argument("--no-notify", action="store_true", help="Skip notifications")
 
     build_parser = sub.add_parser("build-image", help="Build the auditor Docker image")

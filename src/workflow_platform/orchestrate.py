@@ -24,9 +24,8 @@ from typing import Any
 
 import structlog
 
-from workflow_platform.auditor import _report_archive_dir
+from workflow_platform.auditor import _report_archive_dir, run_audit
 from workflow_platform.config import PlatformConfig
-from workflow_platform.auditor import run_audit
 from workflow_platform.workflow_env import cmd_destroy, cmd_up, get_client
 
 log = structlog.get_logger("workflow_platform.orchestrate")

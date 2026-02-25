@@ -150,5 +150,3 @@ class TestRouteNotifications:
         report = {"service": "x", "overall": "pass", "summary": "ok", "scenarios": []}
         # Should not raise
         route_notifications(report)
-
-

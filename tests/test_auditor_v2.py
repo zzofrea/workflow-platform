@@ -9,16 +9,14 @@ from __future__ import annotations
 import json
 import subprocess as sp
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from workflow_platform.auditor import (
     ALLOWED_TOOLS_V2,
     _build_docker_cmd,
-    _check_db_running,
     _parse_credentials,
-    _resolve_container_names,
     run_audit,
 )
 
@@ -215,7 +213,10 @@ class TestRunAuditV2:
     @patch("workflow_platform.auditor.route_notifications")
     @patch("workflow_platform.auditor.subprocess.run")
     @patch("workflow_platform.auditor._check_db_running", return_value=True)
-    @patch("workflow_platform.auditor._resolve_container_names", return_value={"gov-bid-postgres": "real-ctr"})
+    @patch(
+        "workflow_platform.auditor._resolve_container_names",
+        return_value={"gov-bid-postgres": "real-ctr"},
+    )
     @patch("workflow_platform.auditor._image_exists_locally", return_value=True)
     def test_successful_audit_complete_report(
         self,
@@ -272,7 +273,10 @@ class TestRunAuditV2:
     @patch("workflow_platform.auditor.route_notifications")
     @patch("workflow_platform.auditor.subprocess.run")
     @patch("workflow_platform.auditor._check_db_running", return_value=True)
-    @patch("workflow_platform.auditor._resolve_container_names", return_value={"gov-bid-postgres": "real-ctr"})
+    @patch(
+        "workflow_platform.auditor._resolve_container_names",
+        return_value={"gov-bid-postgres": "real-ctr"},
+    )
     @patch("workflow_platform.auditor._image_exists_locally", return_value=True)
     def test_temp_network_lifecycle(
         self,
@@ -304,7 +308,10 @@ class TestRunAuditV2:
         assert any("network" in c and "rm" in c for c in all_calls_str)
 
     @patch("workflow_platform.auditor.route_notifications")
-    @patch("workflow_platform.auditor._resolve_container_names", return_value={"gov-bid-postgres": "real-ctr"})
+    @patch(
+        "workflow_platform.auditor._resolve_container_names",
+        return_value={"gov-bid-postgres": "real-ctr"},
+    )
     @patch("workflow_platform.auditor._check_db_running", return_value=False)
     @patch("workflow_platform.auditor._image_exists_locally", return_value=True)
     def test_db_not_running_fails_early(
@@ -334,7 +341,10 @@ class TestRunAuditV2:
     @patch("workflow_platform.auditor.route_notifications")
     @patch("workflow_platform.auditor.subprocess.run")
     @patch("workflow_platform.auditor._check_db_running", return_value=True)
-    @patch("workflow_platform.auditor._resolve_container_names", return_value={"gov-bid-postgres": "real-ctr"})
+    @patch(
+        "workflow_platform.auditor._resolve_container_names",
+        return_value={"gov-bid-postgres": "real-ctr"},
+    )
     @patch("workflow_platform.auditor._image_exists_locally", return_value=True)
     def test_timeout_kills_and_cleans_up(
         self,
@@ -376,7 +386,10 @@ class TestRunAuditV2:
     @patch("workflow_platform.auditor.route_notifications")
     @patch("workflow_platform.auditor.subprocess.run")
     @patch("workflow_platform.auditor._check_db_running", return_value=True)
-    @patch("workflow_platform.auditor._resolve_container_names", return_value={"gov-bid-postgres": "real-ctr"})
+    @patch(
+        "workflow_platform.auditor._resolve_container_names",
+        return_value={"gov-bid-postgres": "real-ctr"},
+    )
     @patch("workflow_platform.auditor._image_exists_locally", return_value=True)
     def test_network_alias_matches_hostname(
         self,
@@ -415,7 +428,10 @@ class TestRunAuditV2:
     @patch("workflow_platform.auditor.route_notifications")
     @patch("workflow_platform.auditor.subprocess.run")
     @patch("workflow_platform.auditor._check_db_running", return_value=True)
-    @patch("workflow_platform.auditor._resolve_container_names", return_value={"gov-bid-postgres": "real-ctr"})
+    @patch(
+        "workflow_platform.auditor._resolve_container_names",
+        return_value={"gov-bid-postgres": "real-ctr"},
+    )
     @patch("workflow_platform.auditor._image_exists_locally", return_value=True)
     def test_cleanup_on_container_failure(
         self,
@@ -459,11 +475,16 @@ class TestRunAuditV2:
         spec = tmp_path / "spec.md"
         spec.write_text("GIVEN x. WHEN y. THEN z.")
         access = tmp_path / "access.md"
-        access.write_text("- Host: test-db\n- Port: 5432\n- Database: testdb\n- User: u\n- Password: p\n")
+        access.write_text(
+            "- Host: test-db\n- Port: 5432\n- Database: testdb\n- User: u\n- Password: p\n"
+        )
 
         with (
             patch("workflow_platform.auditor._image_exists_locally", return_value=True),
-            patch("workflow_platform.auditor._resolve_container_names", return_value={"test-db": "test-db"}),
+            patch(
+                "workflow_platform.auditor._resolve_container_names",
+                return_value={"test-db": "test-db"},
+            ),
             patch("workflow_platform.auditor._check_db_running", return_value=False),
             patch("workflow_platform.auditor.route_notifications"),
         ):
