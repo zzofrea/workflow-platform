@@ -126,6 +126,36 @@ Output format -- respond with ONLY a JSON object (no markdown fencing):
 """
 
 
+SYSTEM_PROMPT_V2 = """\
+You are a behavioral auditor. You verify that a running service meets its \
+specification by querying its database and checking the results. You act like \
+a user or downstream consumer of this service -- you check observable outcomes, \
+not implementation details.
+
+You have psql access to the service database (connection details are in your \
+environment variables). Read the spec, run queries to verify each scenario, \
+and produce a JSON report.
+
+Output format -- respond with ONLY a JSON object (no markdown fencing, no \
+extra text):
+{
+  "scenarios": [
+    {
+      "id": 1,
+      "description": "Brief description of the scenario",
+      "status": "pass" | "fail" | "error",
+      "observation": "What you actually observed",
+      "evidence": "Concrete data: query results, counts, timestamps, etc.",
+      "expected": "What the spec says should happen"
+    }
+  ],
+  "summary": "One-line overall assessment"
+}
+"""
+
+ALLOWED_TOOLS_V2 = "Read,Bash(psql*),Bash(python3*),Bash(date*)"
+
+
 def setup_claude_auth() -> None:
     """Copy Claude auth from read-only staging mount to writable home.
 
@@ -208,7 +238,9 @@ def _get_stage() -> str:
 
 def _get_system_prompt(stage: str) -> str:
     """Return the appropriate system prompt for the current stage."""
-    if stage == "planner":
+    if stage == "v2":
+        return SYSTEM_PROMPT_V2
+    elif stage == "planner":
         return SYSTEM_PROMPT_PLANNER
     elif stage == "analyzer":
         return SYSTEM_PROMPT_ANALYZER
@@ -218,9 +250,13 @@ def _get_system_prompt(stage: str) -> str:
 def _get_allowed_tools(stage: str) -> str:
     """Return the allowed tools string for the current stage.
 
+    V2 stage: scoped to psql, python3, date, and Read.
     Planner/analyzer stages: use AUDITOR_ALLOWED_TOOLS env var (default: Read).
     Legacy stage: build scoped tools from AUDITOR_ALLOWED_HOSTS.
     """
+    if stage == "v2":
+        return ALLOWED_TOOLS_V2
+
     if stage in ("planner", "analyzer"):
         return os.environ.get("AUDITOR_ALLOWED_TOOLS", "Read")
 
@@ -518,6 +554,56 @@ def _run_analyzer_stage(model: str, service: str, mode: str, max_turns: int) -> 
         sys.exit(1)
 
 
+def _run_v2_stage(model: str, service: str, mode: str, max_turns: int) -> None:
+    """V2 stage: single-pass audit with direct DB access via psql env vars."""
+    spec = read_input_file("spec.md")
+    access = read_input_file("access.md")
+
+    if not spec:
+        print("Error: No spec.md found in /audit/input/", file=sys.stderr)
+        sys.exit(1)
+
+    prompt = build_prompt(spec, access)
+    raw_output, duration = run_claude(prompt, model, max_turns)
+    print(f"Audit completed in {duration:.1f}s")
+
+    incomplete = False
+    incomplete_reason = ""
+    if not raw_output.strip():
+        incomplete = True
+        incomplete_reason = "Empty response from Claude CLI"
+
+    parsed = parse_report(raw_output)
+    if parsed is None and raw_output.strip():
+        incomplete = True
+        incomplete_reason = "Could not parse structured report from output"
+
+    report = build_json_report(
+        parsed=parsed,
+        raw_output=raw_output,
+        model=model,
+        mode=mode,
+        service=service,
+        duration=duration,
+        incomplete=incomplete,
+        incomplete_reason=incomplete_reason,
+    )
+
+    md_report = build_markdown_report(report)
+
+    with open(os.path.join(OUTPUT_DIR, "report.json"), "w") as f:
+        json.dump(report, f, indent=2)
+
+    with open(os.path.join(OUTPUT_DIR, "report.md"), "w") as f:
+        f.write(md_report)
+
+    print(f"Reports written to {OUTPUT_DIR}/")
+    print(f"Overall: {report['overall']}")
+
+    if report["overall"] in ("fail", "error"):
+        sys.exit(1)
+
+
 def _run_legacy_stage(model: str, service: str, mode: str, max_turns: int) -> None:
     """Legacy stage: single-pass audit (backward compatibility)."""
     spec = read_input_file("spec.md")
@@ -581,7 +667,9 @@ def main() -> None:
     # Set up writable Claude auth from read-only staging mount
     setup_claude_auth()
 
-    if stage == "planner":
+    if stage == "v2":
+        _run_v2_stage(model, service, mode, max_turns)
+    elif stage == "planner":
         _run_planner_stage(model, max_turns)
     elif stage == "analyzer":
         _run_analyzer_stage(model, service, mode, max_turns)
