@@ -98,10 +98,27 @@ def prepare_input(input_dir: str, spec_path: str, access_path: str) -> None:
 ALLOWED_TOOLS_V2 = "Read,Bash(psql*),Bash(python3*),Bash(date*)"
 
 
+def _resolve_env_var(value: str) -> str:
+    """Resolve ${VAR_NAME} references from host environment.
+
+    Returns the resolved value, or raises ValueError if the env var is not set.
+    Literal strings (no ${...} syntax) are returned as-is.
+    """
+    match = re.fullmatch(r"\$\{(\w+)\}", value)
+    if not match:
+        return value
+    var_name = match.group(1)
+    resolved = os.environ.get(var_name)
+    if resolved is None:
+        raise ValueError(f"Environment variable '{var_name}' is not set")
+    return resolved
+
+
 def _parse_credentials(access_path: str) -> dict[str, str]:
     """Extract DB credentials from an access document.
 
     Returns a flat dict with host/port/database/user/password keys.
+    Password values support ${ENV_VAR} syntax for env var resolution.
     If password contains "none" or "trust" (case-insensitive), it is
     treated as empty (trust authentication).
     """
@@ -124,7 +141,7 @@ def _parse_credentials(access_path: str) -> dict[str, str]:
                     if re.search(r"\b(none|trust)\b", raw_pw, re.IGNORECASE):
                         creds["password"] = ""
                     else:
-                        creds["password"] = raw_pw
+                        creds["password"] = _resolve_env_var(raw_pw)
     except OSError:
         log.warning("auditor.creds_read_failed", path=access_path)
 

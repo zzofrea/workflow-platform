@@ -17,6 +17,7 @@ from workflow_platform.auditor import (
     ALLOWED_TOOLS_V2,
     _build_docker_cmd,
     _parse_credentials,
+    _resolve_env_var,
     run_audit,
 )
 
@@ -26,8 +27,9 @@ from workflow_platform.auditor import (
 
 
 @pytest.fixture()
-def access_doc_password(tmp_path: Path) -> Path:
-    """Access doc for bid-scraper with real password."""
+def access_doc_password(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Access doc for bid-scraper with env var password reference."""
+    monkeypatch.setenv("TEST_DB_PASSWORD", "test_secret_123")
     doc = tmp_path / "access.md"
     doc.write_text(
         "## Database\n\n"
@@ -35,7 +37,7 @@ def access_doc_password(tmp_path: Path) -> Path:
         "- Port: 5432\n"
         "- Database: govbids\n"
         "- User: auditor_ro\n"
-        "- Password: auditor_ro_readonly\n"
+        "- Password: ${TEST_DB_PASSWORD}\n"
     )
     return doc
 
@@ -74,10 +76,10 @@ def spec_file(tmp_path: Path) -> Path:
 
 
 class TestParseCredentials:
-    def test_password_auth_includes_password(self, access_doc_password: Path) -> None:
+    def test_password_auth_resolves_env_var(self, access_doc_password: Path) -> None:
         creds = _parse_credentials(str(access_doc_password))
         assert creds["host"] == "gov-bid-postgres"
-        assert creds["password"] == "auditor_ro_readonly"
+        assert creds["password"] == "test_secret_123"
         assert creds["database"] == "govbids"
         assert creds["user"] == "auditor_ro"
         assert creds["port"] == "5432"
@@ -91,6 +93,25 @@ class TestParseCredentials:
     def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
         creds = _parse_credentials(str(tmp_path / "nonexistent.md"))
         assert creds == {}
+
+    def test_missing_env_var_raises(self, tmp_path: Path) -> None:
+        doc = tmp_path / "access.md"
+        doc.write_text("## Database\n\n- Host: somehost\n- Password: ${NONEXISTENT_VAR_12345}\n")
+        with pytest.raises(ValueError, match="NONEXISTENT_VAR_12345"):
+            _parse_credentials(str(doc))
+
+
+class TestResolveEnvVar:
+    def test_resolves_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MY_SECRET", "hunter2")
+        assert _resolve_env_var("${MY_SECRET}") == "hunter2"
+
+    def test_literal_string_passthrough(self) -> None:
+        assert _resolve_env_var("plain_value") == "plain_value"
+
+    def test_missing_var_raises(self) -> None:
+        with pytest.raises(ValueError, match="DOES_NOT_EXIST"):
+            _resolve_env_var("${DOES_NOT_EXIST}")
 
 
 # ---------------------------------------------------------------------------

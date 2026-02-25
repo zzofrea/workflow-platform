@@ -6,11 +6,11 @@
 - Port: 5432
 - Database: govbids
 - User: auditor_ro
-- Password: auditor_ro_readonly
+- Password: ${BID_SCRAPER_DB_PASSWORD}
 
 Connection command:
 ```
-PGPASSWORD=auditor_ro_readonly psql -h gov-bid-postgres -p 5432 -U auditor_ro -d govbids
+psql -h gov-bid-postgres -p 5432 -U auditor_ro -d govbids
 ```
 
 ## Tables
