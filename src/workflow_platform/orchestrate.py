@@ -26,7 +26,7 @@ import structlog
 
 from workflow_platform.auditor import _report_archive_dir
 from workflow_platform.config import PlatformConfig
-from workflow_platform.two_stage_auditor import run_two_stage_audit
+from workflow_platform.auditor import run_audit_v2
 from workflow_platform.workflow_env import cmd_destroy, cmd_up, get_client
 
 log = structlog.get_logger("workflow_platform.orchestrate")
@@ -67,7 +67,7 @@ def cmd_build(
     access_path: str,
     *,
     model: str = "sonnet",
-    max_turns: int = 20,
+    max_turns: int = 50,
     force: bool = False,
 ) -> dict[str, Any]:
     """Run the build workflow: spin up dev -> run auditor -> present report.
@@ -96,7 +96,7 @@ def cmd_build(
 
     # Step 3: Run auditor against dev
     print("\n--- Step 2: Behavioral audit ---")
-    report = run_two_stage_audit(
+    report = run_audit_v2(
         spec_path=spec_path,
         access_path=access_path,
         service=service,
@@ -341,7 +341,7 @@ def cmd_monitor(
     *,
     exec_command: str | None = None,
     model: str = "sonnet",
-    max_turns: int = 20,
+    max_turns: int = 50,
     audit_timeout: int = 600,
 ) -> dict[str, Any]:
     """Run the auditor in prod mode against a live service.
@@ -400,7 +400,7 @@ def cmd_monitor(
 
     # -- Audit phase --
     print("\n--- Audit ---")
-    report = run_two_stage_audit(
+    report = run_audit_v2(
         spec_path=spec_path,
         access_path=access_path,
         service=service,
@@ -436,7 +436,7 @@ def main() -> None:
     build_p.add_argument("--spec", required=True, help="Path to behavioral spec")
     build_p.add_argument("--access", required=True, help="Path to access document")
     build_p.add_argument("--model", default="sonnet", help="Claude model")
-    build_p.add_argument("--max-turns", type=int, default=20, help="Max auditor turns")
+    build_p.add_argument("--max-turns", type=int, default=50, help="Max auditor turns")
     build_p.add_argument("--force", action="store_true", help="Skip resource guard")
 
     # Deploy
@@ -470,7 +470,7 @@ def main() -> None:
         help="Max seconds for auditor container (default: 600 = 10 min)",
     )
     mon_p.add_argument("--model", default="sonnet", help="Claude model")
-    mon_p.add_argument("--max-turns", type=int, default=20, help="Max auditor turns")
+    mon_p.add_argument("--max-turns", type=int, default=50, help="Max auditor turns")
 
     args = parser.parse_args()
 

@@ -75,7 +75,7 @@ class TestConfirm:
 
 
 class TestCmdBuild:
-    @patch("workflow_platform.orchestrate.run_two_stage_audit")
+    @patch("workflow_platform.orchestrate.run_audit_v2")
     @patch("workflow_platform.orchestrate.cmd_up")
     @patch("workflow_platform.orchestrate.get_client")
     @patch("workflow_platform.orchestrate.PlatformConfig")
@@ -112,7 +112,7 @@ class TestCmdBuild:
         call_kwargs = mock_run_audit.call_args.kwargs
         assert call_kwargs.get("mode") == "build"
 
-    @patch("workflow_platform.orchestrate.run_two_stage_audit")
+    @patch("workflow_platform.orchestrate.run_audit_v2")
     @patch("workflow_platform.orchestrate.cmd_up")
     @patch("workflow_platform.orchestrate.get_client")
     @patch("workflow_platform.orchestrate.PlatformConfig")
@@ -291,7 +291,7 @@ class TestExecService:
 
 
 class TestCmdMonitor:
-    @patch("workflow_platform.orchestrate.run_two_stage_audit")
+    @patch("workflow_platform.orchestrate.run_audit_v2")
     @patch("workflow_platform.orchestrate.PlatformConfig")
     def test_monitor_runs_in_prod_mode(
         self, mock_config: MagicMock, mock_run_audit: MagicMock, tmp_path: Path
@@ -313,7 +313,7 @@ class TestCmdMonitor:
         call_kwargs = mock_run_audit.call_args.kwargs
         assert call_kwargs["mode"] == "prod"
 
-    @patch("workflow_platform.orchestrate.run_two_stage_audit")
+    @patch("workflow_platform.orchestrate.run_audit_v2")
     @patch("workflow_platform.orchestrate.PlatformConfig")
     def test_monitor_returns_failures(
         self, mock_config: MagicMock, mock_run_audit: MagicMock, tmp_path: Path
@@ -333,7 +333,7 @@ class TestCmdMonitor:
 
         assert report["overall"] == "fail"
 
-    @patch("workflow_platform.orchestrate.run_two_stage_audit")
+    @patch("workflow_platform.orchestrate.run_audit_v2")
     @patch("workflow_platform.orchestrate._exec_service")
     @patch("workflow_platform.orchestrate._check_container_running", return_value=True)
     @patch("workflow_platform.orchestrate._report_archive_dir")
@@ -368,7 +368,7 @@ class TestCmdMonitor:
         # Verify exec output was saved
         assert (archive / "exec_output.log").exists()
 
-    @patch("workflow_platform.orchestrate.run_two_stage_audit")
+    @patch("workflow_platform.orchestrate.run_audit_v2")
     @patch("workflow_platform.orchestrate._notify_exec_failure")
     @patch("workflow_platform.orchestrate._exec_service")
     @patch("workflow_platform.orchestrate._check_container_running", return_value=True)
@@ -431,7 +431,7 @@ class TestCmdMonitor:
 
         mock_notify_ctr.assert_called_once_with("etl", "etl-ctr")
 
-    @patch("workflow_platform.orchestrate.run_two_stage_audit")
+    @patch("workflow_platform.orchestrate.run_audit_v2")
     @patch("workflow_platform.orchestrate.PlatformConfig")
     def test_monitor_without_exec_works_as_before(
         self, mock_config: MagicMock, mock_run_audit: MagicMock, tmp_path: Path
@@ -447,11 +447,11 @@ class TestCmdMonitor:
         report = cmd_monitor("bid-scraper", str(spec), str(access))
 
         assert report["overall"] == "pass"
-        # run_two_stage_audit should still receive total_timeout
+        # run_audit_v2 should still receive total_timeout
         call_kwargs = mock_run_audit.call_args.kwargs
         assert call_kwargs["total_timeout"] == 600
 
-    @patch("workflow_platform.orchestrate.run_two_stage_audit")
+    @patch("workflow_platform.orchestrate.run_audit_v2")
     @patch("workflow_platform.orchestrate._exec_service")
     @patch("workflow_platform.orchestrate._check_container_running", return_value=True)
     @patch("workflow_platform.orchestrate._report_archive_dir")
