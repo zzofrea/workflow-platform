@@ -268,3 +268,41 @@ class TestBuildMarkdownReport:
         md = entrypoint.build_markdown_report(report)
         assert "Raw Output" in md
         assert "Some garbage output" in md
+
+
+# -- V2 stage --
+
+
+class TestV2Stage:
+    def test_system_prompt_v2_content(self) -> None:
+        """V2 system prompt establishes identity and output format."""
+        assert "behavioral auditor" in entrypoint.SYSTEM_PROMPT_V2
+        assert "psql" in entrypoint.SYSTEM_PROMPT_V2
+        assert '"status": "pass"' in entrypoint.SYSTEM_PROMPT_V2
+        assert "environment variables" in entrypoint.SYSTEM_PROMPT_V2
+
+    def test_allowed_tools_v2_scoped(self) -> None:
+        """V2 allowed tools are scoped to psql, python3, date, and Read."""
+        tools = entrypoint.ALLOWED_TOOLS_V2
+        assert "Read" in tools
+        assert "Bash(psql*)" in tools
+        assert "Bash(python3*)" in tools
+        assert "Bash(date*)" in tools
+        assert "curl" not in tools
+        assert "wget" not in tools
+
+    def test_v2_stage_dispatch(self) -> None:
+        """_get_stage returns 'v2' when AUDITOR_STAGE=v2."""
+        import os
+
+        old = os.environ.get("AUDITOR_STAGE")
+        try:
+            os.environ["AUDITOR_STAGE"] = "v2"
+            assert entrypoint._get_stage() == "v2"
+            assert entrypoint._get_system_prompt("v2") == entrypoint.SYSTEM_PROMPT_V2
+            assert entrypoint._get_allowed_tools("v2") == entrypoint.ALLOWED_TOOLS_V2
+        finally:
+            if old is None:
+                os.environ.pop("AUDITOR_STAGE", None)
+            else:
+                os.environ["AUDITOR_STAGE"] = old
