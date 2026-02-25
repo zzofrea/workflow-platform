@@ -1,10 +1,5 @@
 # DefenderShield ETL Behavioral Specification
 
-Note: The analyzer has Bash access and CAN run Python, jq, and grep on the
-full executor results (executor_results.json). This enables row counting,
-percentage-based integrity checks, and full-table analysis. Scenarios should
-use concrete numeric thresholds that the analyzer can verify programmatically.
-
 ## Scenario 1: Database connectivity
 GIVEN the ETL service has a running database.
 WHEN a connection is attempted using the provided credentials.
