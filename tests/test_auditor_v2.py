@@ -15,11 +15,11 @@ import pytest
 
 from workflow_platform.auditor import (
     ALLOWED_TOOLS_V2,
-    _build_v2_docker_cmd,
+    _build_docker_cmd,
     _check_db_running,
     _parse_credentials,
     _resolve_container_names,
-    run_audit_v2,
+    run_audit,
 )
 
 # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ class TestParseCredentials:
 class TestBuildV2DockerCmd:
     def test_pg_env_vars_in_docker_cmd(self) -> None:
         """Verify all PG env vars are passed to the container."""
-        cmd = _build_v2_docker_cmd(
+        cmd = _build_docker_cmd(
             "/tmp/input",
             "/tmp/output",
             service="bid-scraper",
@@ -126,7 +126,7 @@ class TestBuildV2DockerCmd:
 
     def test_trust_auth_omits_pgpassword(self) -> None:
         """When password is empty (trust auth), PGPASSWORD should not be set."""
-        cmd = _build_v2_docker_cmd(
+        cmd = _build_docker_cmd(
             "/tmp/input",
             "/tmp/output",
             service="etl",
@@ -147,7 +147,7 @@ class TestBuildV2DockerCmd:
 
     def test_not_on_dokploy_network(self) -> None:
         """The v2 auditor must never use dokploy-network."""
-        cmd = _build_v2_docker_cmd(
+        cmd = _build_docker_cmd(
             "/tmp/input",
             "/tmp/output",
             service="test",
@@ -170,7 +170,7 @@ class TestBuildV2DockerCmd:
 
     def test_max_turns_default_50(self) -> None:
         """Default max_turns in the docker cmd should be 50."""
-        cmd = _build_v2_docker_cmd(
+        cmd = _build_docker_cmd(
             "/tmp/input",
             "/tmp/output",
             service="test",
@@ -182,7 +182,7 @@ class TestBuildV2DockerCmd:
 
     def test_v2_stage_env_var(self) -> None:
         """The container must have AUDITOR_STAGE=v2."""
-        cmd = _build_v2_docker_cmd(
+        cmd = _build_docker_cmd(
             "/tmp/input",
             "/tmp/output",
             service="test",
@@ -194,7 +194,7 @@ class TestBuildV2DockerCmd:
 
     def test_cap_drop_all(self) -> None:
         """Container must drop all capabilities."""
-        cmd = _build_v2_docker_cmd(
+        cmd = _build_docker_cmd(
             "/tmp/input",
             "/tmp/output",
             service="test",
@@ -256,7 +256,7 @@ class TestRunAuditV2:
 
         mock_run.side_effect = side_effect
 
-        report = run_audit_v2(
+        report = run_audit(
             str(spec_file),
             str(access_doc_password),
             "bid-scraper",
@@ -288,7 +288,7 @@ class TestRunAuditV2:
         """Verify network create, connect, disconnect, and rm are all called."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-        run_audit_v2(
+        run_audit(
             str(spec_file),
             str(access_doc_password),
             "bid-scraper",
@@ -318,7 +318,7 @@ class TestRunAuditV2:
         tmp_path: Path,
     ) -> None:
         """When DB is not running, fail before launching the auditor container."""
-        report = run_audit_v2(
+        report = run_audit(
             str(spec_file),
             str(access_doc_password),
             "bid-scraper",
@@ -356,7 +356,7 @@ class TestRunAuditV2:
 
         mock_run.side_effect = side_effect
 
-        report = run_audit_v2(
+        report = run_audit(
             str(spec_file),
             str(access_doc_password),
             "bid-scraper",
@@ -392,7 +392,7 @@ class TestRunAuditV2:
         """The --alias in the connect call must match the DB hostname."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-        run_audit_v2(
+        run_audit(
             str(spec_file),
             str(access_doc_password),
             "bid-scraper",
@@ -437,7 +437,7 @@ class TestRunAuditV2:
 
         mock_run.side_effect = side_effect
 
-        report = run_audit_v2(
+        report = run_audit(
             str(spec_file),
             str(access_doc_password),
             "bid-scraper",
@@ -467,7 +467,7 @@ class TestRunAuditV2:
             patch("workflow_platform.auditor._check_db_running", return_value=False),
             patch("workflow_platform.auditor.route_notifications"),
         ):
-            report = run_audit_v2(
+            report = run_audit(
                 str(spec),
                 str(access),
                 "test",

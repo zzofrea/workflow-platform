@@ -20,112 +20,6 @@ INPUT_DIR = "/audit/input"
 OUTPUT_DIR = "/audit/output"
 AUTH_STAGING_DIR = "/audit/auth"
 
-# Default allowed hosts if none specified (empty = fully locked down)
-_DEFAULT_ALLOWED_HOSTS: list[str] = []
-
-SYSTEM_PROMPT_LEGACY = """\
-You are a behavioral auditor. Your job is to verify that a running service \
-satisfies its behavioral specification. You are a CLIENT auditor -- you test \
-from the outside, like a user or downstream system would.
-
-Rules:
-1. You receive a behavioral spec (GIVEN/WHEN/THEN scenarios) and an access \
-document describing how to reach the service (DB connection strings, API \
-endpoints, etc.).
-2. For each scenario, design your own verification approach. Query databases, \
-call APIs, or inspect endpoints ONLY at the hosts listed in the access document.
-3. Report ONLY observable findings with concrete evidence (actual query \
-results, HTTP responses, row counts, timestamps).
-4. NEVER modify data. Use SELECT queries only. Do not INSERT, UPDATE, DELETE, \
-or run DDL.
-5. NEVER access source code. You validate behavior, not implementation.
-6. NEVER scan, probe, or connect to hosts not listed in the access document. \
-Do not enumerate network ranges, discover services, or port-scan.
-7. If a scenario cannot be verified (e.g., access denied, service unreachable), \
-report it as "error" with the reason.
-
-Output format -- respond with ONLY a JSON object (no markdown fencing, no \
-extra text):
-{
-  "scenarios": [
-    {
-      "id": 1,
-      "description": "Brief description of the scenario",
-      "status": "pass" | "fail" | "error",
-      "observation": "What you actually observed",
-      "evidence": "Concrete data: query results, HTTP responses, etc.",
-      "expected": "What the spec says should happen"
-    }
-  ],
-  "summary": "One-line overall assessment"
-}
-"""
-
-SYSTEM_PROMPT_PLANNER = """\
-You are the PLANNER stage of a behavioral auditor. Your job is to read a \
-behavioral spec and an access document, then produce a JSON query plan \
-describing exactly which data to collect.
-
-You have NO network access. You can only read files in /audit/input/.
-
-Rules:
-1. Read the spec (spec.md) and access document (access.md) from /audit/input/.
-2. For each scenario, decide what queries are needed to verify it.
-3. Output a JSON query plan with ONLY these allowed query types:
-   - psql: SELECT * FROM <table_name>; (no WHERE, JOIN, or other clauses)
-   - curl: exact URL from the access document's Allowed URLs table
-4. Include ONLY hosts and URLs listed in the access document.
-5. Do NOT include credentials, passwords, or connection details in the plan.
-
-Output format -- respond with ONLY a JSON object (no markdown fencing):
-{
-  "queries": [
-    {"type": "psql", "host": "hostname", "query": "SELECT * FROM tablename;"},
-    {"type": "curl", "url": "https://exact-url-from-access-doc"}
-  ]
-}
-"""
-
-SYSTEM_PROMPT_ANALYZER = """\
-You are the ANALYZER stage of a behavioral auditor. Your job is to evaluate \
-pre-collected data against a behavioral specification and produce a report.
-
-You have NO network access but you DO have Bash access. Use Python, jq, or \
-grep to analyze the executor results programmatically.
-
-Rules:
-1. Read the spec (spec.md) and access document (access.md) from /audit/input/.
-2. The executor results are in /audit/input/executor_results.json. This file \
-can be very large (full table dumps). Do NOT try to read it all at once. \
-Use Bash with Python or jq to extract counts, check nulls, compute \
-percentages, and verify thresholds.
-3. For each scenario in the spec, write a short Python or jq script to \
-verify the criteria against the collected data.
-4. Report ONLY observable findings with concrete evidence from the data.
-5. If data needed for a scenario was not collected, report it as "error".
-
-Example analysis approach:
-- Row counts: python3 -c "import json; d=json.load(open(...)); ..."
-- Null checks: python3 scripts to parse pipe-separated psql output
-- Date checks: python3 with datetime parsing
-
-Output format -- respond with ONLY a JSON object (no markdown fencing):
-{
-  "scenarios": [
-    {
-      "id": 1,
-      "description": "Brief description of the scenario",
-      "status": "pass" | "fail" | "error",
-      "observation": "What you actually observed in the data",
-      "evidence": "Concrete data: row counts, timestamps, values, etc.",
-      "expected": "What the spec says should happen"
-    }
-  ],
-  "summary": "One-line overall assessment"
-}
-"""
-
-
 SYSTEM_PROMPT_V2 = """\
 You are a behavioral auditor. You verify that a running service meets its \
 specification by querying its database and checking the results. You act like \
@@ -212,61 +106,19 @@ def build_prompt(spec: str, access: str) -> str:
     return "\n".join(parts)
 
 
-def _build_allowed_tools(allowed_hosts: list[str]) -> str:
-    """Build a scoped --allowedTools string restricting psql/curl to declared hosts.
-
-    If allowed_hosts is empty, only Bash(date) and Read are permitted (no DB or
-    HTTP access). Each host gets explicit psql and curl rules so the auditor
-    cannot probe the broader Docker network.
-    """
-    tools: list[str] = []
-    for host in allowed_hosts:
-        # psql scoped to this host only
-        tools.append(f"Bash(psql:*{host}*)")
-        # curl scoped to this host only (for API-based services)
-        tools.append(f"Bash(curl:*{host}*)")
-    # Always allow date (for timestamp checks) and Read (for spec/access docs)
-    tools.append("Bash(date)")
-    tools.append("Read")
-    return ",".join(tools)
-
-
 def _get_stage() -> str:
-    """Get the auditor stage from environment (planner, analyzer, or legacy)."""
-    return os.environ.get("AUDITOR_STAGE", "legacy")
+    """Get the auditor stage from environment."""
+    return os.environ.get("AUDITOR_STAGE", "v2")
 
 
 def _get_system_prompt(stage: str) -> str:
-    """Return the appropriate system prompt for the current stage."""
-    if stage == "v2":
-        return SYSTEM_PROMPT_V2
-    elif stage == "planner":
-        return SYSTEM_PROMPT_PLANNER
-    elif stage == "analyzer":
-        return SYSTEM_PROMPT_ANALYZER
-    return SYSTEM_PROMPT_LEGACY
+    """Return the system prompt for the current stage."""
+    return SYSTEM_PROMPT_V2
 
 
 def _get_allowed_tools(stage: str) -> str:
-    """Return the allowed tools string for the current stage.
-
-    V2 stage: scoped to psql, python3, date, and Read.
-    Planner/analyzer stages: use AUDITOR_ALLOWED_TOOLS env var (default: Read).
-    Legacy stage: build scoped tools from AUDITOR_ALLOWED_HOSTS.
-    """
-    if stage == "v2":
-        return ALLOWED_TOOLS_V2
-
-    if stage in ("planner", "analyzer"):
-        return os.environ.get("AUDITOR_ALLOWED_TOOLS", "Read")
-
-    # Legacy mode: scope tools to declared hosts
-    hosts_env = os.environ.get("AUDITOR_ALLOWED_HOSTS", "")
-    if hosts_env:
-        allowed_hosts = [h.strip() for h in hosts_env.split(",") if h.strip()]
-    else:
-        allowed_hosts = _DEFAULT_ALLOWED_HOSTS
-    return _build_allowed_tools(allowed_hosts)
+    """Return the allowed tools string for the current stage."""
+    return ALLOWED_TOOLS_V2
 
 
 def run_claude(prompt: str, model: str, max_turns: int) -> tuple[str, float]:
@@ -455,105 +307,6 @@ def build_markdown_report(report: dict) -> str:
     return "\n".join(lines)
 
 
-def _run_planner_stage(model: str, max_turns: int) -> None:
-    """Planner stage: read spec+access, produce plan.json."""
-    spec = read_input_file("spec.md")
-    access = read_input_file("access.md")
-
-    if not spec:
-        print("Error: No spec.md found in /audit/input/", file=sys.stderr)
-        sys.exit(1)
-
-    prompt = build_prompt(spec, access)
-    prompt += (
-        "\n\nProduce a JSON query plan listing the exact queries needed to "
-        "verify each scenario. Use ONLY 'SELECT * FROM <table>;' for psql "
-        "and exact URLs from the access doc for curl."
-    )
-
-    raw_output, duration = run_claude(prompt, model, max_turns)
-    print(f"Planner completed in {duration:.1f}s")
-
-    # Parse the query plan from Claude's output
-    parsed = parse_report(raw_output)
-    if parsed is None:
-        print("Error: Could not parse query plan from planner output", file=sys.stderr)
-        print(f"Raw output: {raw_output[:2000]}", file=sys.stderr)
-        sys.exit(1)
-
-    with open(os.path.join(OUTPUT_DIR, "plan.json"), "w") as f:
-        json.dump(parsed, f, indent=2)
-
-    print(f"Query plan written to {OUTPUT_DIR}/plan.json")
-
-
-def _run_analyzer_stage(model: str, service: str, mode: str, max_turns: int) -> None:
-    """Analyzer stage: read spec+access+executor_results, produce report."""
-    spec = read_input_file("spec.md")
-    access = read_input_file("access.md")
-    has_executor_results = os.path.exists(os.path.join(INPUT_DIR, "executor_results.json"))
-
-    if not spec:
-        print("Error: No spec.md found in /audit/input/", file=sys.stderr)
-        sys.exit(1)
-
-    prompt = build_prompt(spec, access)
-    if has_executor_results:
-        prompt += (
-            "\n\n## Collected Data\n\n"
-            "Executor results are saved at `/audit/input/executor_results.json`. "
-            "This file contains full table dumps (potentially thousands of rows) "
-            "as a JSON object keyed by table name or URL. Each value is the raw "
-            "psql text output (pipe-separated values) or curl JSON response.\n\n"
-            "Use Bash with Python or jq to analyze the data programmatically. "
-            "Do NOT try to read the entire file with the Read tool -- it may be "
-            "too large. Instead, write targeted scripts for each scenario."
-        )
-    prompt += (
-        "\n\nAnalyze the collected data against each scenario in the spec. "
-        "Respond with the JSON report as described in your instructions."
-    )
-
-    raw_output, duration = run_claude(prompt, model, max_turns)
-    print(f"Analyzer completed in {duration:.1f}s")
-
-    incomplete = False
-    incomplete_reason = ""
-    if not raw_output.strip():
-        incomplete = True
-        incomplete_reason = "Empty response from Claude CLI"
-
-    parsed = parse_report(raw_output)
-    if parsed is None and raw_output.strip():
-        incomplete = True
-        incomplete_reason = "Could not parse structured report from output"
-
-    report = build_json_report(
-        parsed=parsed,
-        raw_output=raw_output,
-        model=model,
-        mode=mode,
-        service=service,
-        duration=duration,
-        incomplete=incomplete,
-        incomplete_reason=incomplete_reason,
-    )
-
-    md_report = build_markdown_report(report)
-
-    with open(os.path.join(OUTPUT_DIR, "report.json"), "w") as f:
-        json.dump(report, f, indent=2)
-
-    with open(os.path.join(OUTPUT_DIR, "report.md"), "w") as f:
-        f.write(md_report)
-
-    print(f"Reports written to {OUTPUT_DIR}/")
-    print(f"Overall: {report['overall']}")
-
-    if report["overall"] in ("fail", "error"):
-        sys.exit(1)
-
-
 def _run_v2_stage(model: str, service: str, mode: str, max_turns: int) -> None:
     """V2 stage: single-pass audit with direct DB access via psql env vars."""
     spec = read_input_file("spec.md")
@@ -604,77 +357,19 @@ def _run_v2_stage(model: str, service: str, mode: str, max_turns: int) -> None:
         sys.exit(1)
 
 
-def _run_legacy_stage(model: str, service: str, mode: str, max_turns: int) -> None:
-    """Legacy stage: single-pass audit (backward compatibility)."""
-    spec = read_input_file("spec.md")
-    access = read_input_file("access.md")
-
-    if not spec:
-        print("Error: No spec.md found in /audit/input/", file=sys.stderr)
-        sys.exit(1)
-
-    prompt = build_prompt(spec, access)
-    raw_output, duration = run_claude(prompt, model, max_turns)
-    print(f"Audit completed in {duration:.1f}s")
-
-    incomplete = False
-    incomplete_reason = ""
-    if not raw_output.strip():
-        incomplete = True
-        incomplete_reason = "Empty response from Claude CLI"
-
-    parsed = parse_report(raw_output)
-    if parsed is None and raw_output.strip():
-        incomplete = True
-        incomplete_reason = "Could not parse structured report from output"
-
-    report = build_json_report(
-        parsed=parsed,
-        raw_output=raw_output,
-        model=model,
-        mode=mode,
-        service=service,
-        duration=duration,
-        incomplete=incomplete,
-        incomplete_reason=incomplete_reason,
-    )
-
-    md_report = build_markdown_report(report)
-
-    with open(os.path.join(OUTPUT_DIR, "report.json"), "w") as f:
-        json.dump(report, f, indent=2)
-
-    with open(os.path.join(OUTPUT_DIR, "report.md"), "w") as f:
-        f.write(md_report)
-
-    print(f"Reports written to {OUTPUT_DIR}/")
-    print(f"Overall: {report['overall']}")
-
-    if report["overall"] in ("fail", "error"):
-        sys.exit(1)
-
-
 def main() -> None:
-    """Entrypoint: dispatch to the appropriate stage handler."""
-    stage = _get_stage()
-    mode = os.environ.get("AUDITOR_MODE", "build")
+    """Entrypoint: run the v2 auditor stage."""
+    mode = os.environ.get("AUDITOR_MODE", "prod")
     model = os.environ.get("AUDITOR_MODEL", "sonnet")
     service = os.environ.get("AUDITOR_SERVICE", "unknown")
-    max_turns = int(os.environ.get("AUDITOR_MAX_TURNS", "20"))
+    max_turns = int(os.environ.get("AUDITOR_MAX_TURNS", "50"))
 
-    print(f"Auditor starting: stage={stage} mode={mode} model={model} service={service}")
+    print(f"Auditor starting: mode={mode} model={model} service={service}")
 
     # Set up writable Claude auth from read-only staging mount
     setup_claude_auth()
 
-    if stage == "v2":
-        _run_v2_stage(model, service, mode, max_turns)
-    elif stage == "planner":
-        _run_planner_stage(model, max_turns)
-    elif stage == "analyzer":
-        _run_analyzer_stage(model, service, mode, max_turns)
-    else:
-        _run_legacy_stage(model, service, mode, max_turns)
+    _run_v2_stage(model, service, mode, max_turns)
 
 
 if __name__ == "__main__":
