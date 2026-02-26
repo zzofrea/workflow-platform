@@ -1,15 +1,19 @@
 """Workflow orchestration CLI: connect spec -> build -> audit -> deploy -> monitor.
 
-Thin glue that chains workflow-env, workflow-audit, git push, and
+Thin glue that chains workflow-env, workflow-agent, git push, and
 workflow-notify into a disciplined lifecycle. Human gates at every
 irreversible decision point.
 
+Audit runs are delegated to workflow-agent, which resolves roles, policies,
+and specs from its own agents/ directory. The orchestrator no longer needs
+--spec or --access flags.
+
 Usage:
-    workflow-orchestrate build  --service bid-scraper --spec spec.md --access access.md
+    workflow-orchestrate build  --service bid-scraper
     workflow-orchestrate deploy --service bid-scraper --repo /home/docker/gov-bid-scrape
-    workflow-orchestrate monitor --service bid-scraper --spec spec.md --access access.md
+    workflow-orchestrate monitor --service bid-scraper
     workflow-orchestrate monitor --service defendershield-etl \\
-        --exec "python -m ..." --spec spec.md --access access.md
+        --exec "python -m ..."
 """
 
 from __future__ import annotations
@@ -24,20 +28,22 @@ from typing import Any
 
 import structlog
 
-from workflow_platform.auditor import _report_archive_dir, run_audit
 from workflow_platform.config import PlatformConfig
 from workflow_platform.workflow_env import cmd_destroy, cmd_up, get_client
 
 log = structlog.get_logger("workflow_platform.orchestrate")
 
 
+WORKFLOW_AGENT_CLI = Path.home() / "workflow-agent" / ".venv" / "bin" / "workflow-agent"
+
+
 def _latest_report(service: str) -> dict[str, Any] | None:
     """Find the most recent audit report for a service."""
-    reports_dir = Path.home() / "audit-reports" / service
+    reports_dir = Path.home() / "agent-output" / service
     if not reports_dir.exists():
         return None
 
-    # Reports are stored as {mode}_{timestamp}/ dirs -- sort to get latest
+    # Reports are stored as {role}_{timestamp}/ dirs -- sort to get latest
     subdirs = sorted(reports_dir.iterdir(), reverse=True)
     for d in subdirs:
         report_path = d / "report.json"
@@ -45,6 +51,83 @@ def _latest_report(service: str) -> dict[str, Any] | None:
             with open(report_path) as f:
                 return json.load(f)
     return None
+
+
+def _latest_report_dir(service: str) -> Path | None:
+    """Find the most recent audit report directory for a service."""
+    reports_dir = Path.home() / "agent-output" / service
+    if not reports_dir.exists():
+        return None
+    subdirs = sorted(reports_dir.iterdir(), reverse=True)
+    for d in subdirs:
+        if (d / "report.json").exists():
+            return d
+    return None
+
+
+def _run_workflow_agent(
+    service: str,
+    role: str = "auditor",
+    *,
+    model: str = "sonnet",
+    max_turns: int = 50,
+    timeout: int = 600,
+    no_notify: bool = False,
+) -> dict[str, Any]:
+    """Shell out to workflow-agent CLI to run an agent.
+
+    Returns the report dict from the archived output.
+    """
+    cmd: list[str] = [
+        str(WORKFLOW_AGENT_CLI),
+        "run",
+        role,
+        "--target",
+        service,
+        "--model",
+        model,
+        "--max-turns",
+        str(max_turns),
+        "--timeout",
+        str(timeout),
+    ]
+    if no_notify:
+        cmd.append("--no-notify")
+
+    log.info(
+        "orchestrate.workflow_agent_start",
+        service=service,
+        role=role,
+        model=model,
+        cmd=" ".join(cmd),
+    )
+    print(f"Running: {' '.join(cmd)}")
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout + 60,  # give CLI overhead beyond container timeout
+    )
+
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+
+    # Read the report from the archive directory
+    report = _latest_report(service)
+    if report is not None:
+        return report
+
+    # Fallback: no report found
+    return {
+        "overall": "error",
+        "service": service,
+        "role": role,
+        "summary": f"workflow-agent exited {result.returncode} but no report found",
+        "scenarios": [],
+    }
 
 
 def _confirm(prompt: str) -> bool:
@@ -62,11 +145,10 @@ def _confirm(prompt: str) -> bool:
 
 def cmd_build(
     service: str,
-    spec_path: str,
-    access_path: str,
     *,
     model: str = "sonnet",
     max_turns: int = 50,
+    timeout: int = 600,
     force: bool = False,
 ) -> dict[str, Any]:
     """Run the build workflow: spin up dev -> run auditor -> present report.
@@ -76,36 +158,26 @@ def cmd_build(
     config = PlatformConfig()
     client = get_client(config)
 
-    # Step 1: Verify spec exists
-    if not os.path.isfile(spec_path):
-        print(f"Error: Spec not found: {spec_path}", file=sys.stderr)
-        sys.exit(1)
-    if not os.path.isfile(access_path):
-        print(f"Error: Access doc not found: {access_path}", file=sys.stderr)
-        sys.exit(1)
-
     print(f"=== Build: {service} ===")
     log.info("orchestrate.build_start", service=service)
 
-    # Step 2: Spin up dev environment
+    # Step 1: Spin up dev environment
     print("\n--- Step 1: Dev environment ---")
     dev_env = cmd_up(client, config, service, force=force)
     env_id = dev_env.get("environmentId", "unknown")
     print(f"Dev environment ready: {env_id}")
 
-    # Step 3: Run auditor against dev
+    # Step 2: Run auditor via workflow-agent
     print("\n--- Step 2: Behavioral audit ---")
-    report = run_audit(
-        spec_path=spec_path,
-        access_path=access_path,
-        service=service,
-        mode="build",
+    report = _run_workflow_agent(
+        service,
+        "auditor",
         model=model,
         max_turns=max_turns,
-        notify=True,
+        timeout=timeout,
     )
 
-    # Step 4: Present report
+    # Step 3: Present report
     overall = report.get("overall", "error")
     print(f"\n--- Audit Result: {overall.upper()} ---")
 
@@ -335,8 +407,6 @@ def _notify_container_not_running(service: str, container_name: str) -> None:
 
 def cmd_monitor(
     service: str,
-    spec_path: str,
-    access_path: str,
     *,
     exec_command: str | None = None,
     model: str = "sonnet",
@@ -356,9 +426,7 @@ def cmd_monitor(
     print(f"=== Monitor: {service} ===")
     log.info("orchestrate.monitor_start", service=service, has_exec=exec_command is not None)
 
-    # Resolve archive dir early so exec output can be saved alongside the report
-    archive_dir = _report_archive_dir(service, "prod")
-    os.makedirs(archive_dir, exist_ok=True)
+    exec_log_content: str | None = None
 
     # -- Exec phase --
     if exec_command is not None:
@@ -382,14 +450,12 @@ def cmd_monitor(
         print(f"\n--- Exec: {exec_command} ---")
         exit_code, stdout, stderr = _exec_service(container_name, exec_command, service=service)
 
-        # Save exec output to archive
-        with open(os.path.join(archive_dir, "exec_output.log"), "w") as f:
-            f.write(f"=== EXEC: docker exec {container_name} {exec_command} ===\n")
-            f.write(f"=== EXIT CODE: {exit_code} ===\n\n")
-            f.write("=== STDOUT ===\n")
-            f.write(stdout)
-            f.write("\n=== STDERR ===\n")
-            f.write(stderr)
+        # Buffer exec output to save alongside the report after audit
+        exec_log_content = (
+            f"=== EXEC: docker exec {container_name} {exec_command} ===\n"
+            f"=== EXIT CODE: {exit_code} ===\n\n"
+            f"=== STDOUT ===\n{stdout}\n=== STDERR ===\n{stderr}"
+        )
 
         if exit_code != 0:
             print(f"Warning: Service exec failed (exit {exit_code}). Proceeding to audit.")
@@ -397,19 +463,23 @@ def cmd_monitor(
         else:
             print("Service exec completed successfully.")
 
-    # -- Audit phase --
+    # -- Audit phase (delegated to workflow-agent) --
     print("\n--- Audit ---")
-    report = run_audit(
-        spec_path=spec_path,
-        access_path=access_path,
-        service=service,
-        mode="prod",
+    report = _run_workflow_agent(
+        service,
+        "auditor",
         model=model,
         max_turns=max_turns,
-        notify=True,
-        total_timeout=audit_timeout,
-        archive_dir=archive_dir,
+        timeout=audit_timeout,
     )
+
+    # Save exec output alongside the report if we have it
+    if exec_log_content is not None:
+        report_dir = _latest_report_dir(service)
+        if report_dir is not None:
+            exec_log_path = report_dir / "exec_output.log"
+            exec_log_path.write_text(exec_log_content)
+            log.info("orchestrate.exec_log_saved", path=str(exec_log_path))
 
     overall = report.get("overall", "error")
     print(f"\nMonitor result: {overall.upper()}")
@@ -432,10 +502,14 @@ def main() -> None:
     # Build
     build_p = sub.add_parser("build", help="Spin up dev, run auditor, present report")
     build_p.add_argument("--service", required=True, help="Service name")
-    build_p.add_argument("--spec", required=True, help="Path to behavioral spec")
-    build_p.add_argument("--access", required=True, help="Path to access document")
     build_p.add_argument("--model", default="sonnet", help="Claude model")
     build_p.add_argument("--max-turns", type=int, default=50, help="Max auditor turns")
+    build_p.add_argument(
+        "--audit-timeout",
+        type=int,
+        default=600,
+        help="Max seconds for auditor container (default: 600)",
+    )
     build_p.add_argument("--force", action="store_true", help="Skip resource guard")
 
     # Deploy
@@ -454,8 +528,6 @@ def main() -> None:
         "monitor", help="Run auditor in prod mode (optionally exec service first)"
     )
     mon_p.add_argument("--service", required=True, help="Service name")
-    mon_p.add_argument("--spec", required=True, help="Path to behavioral spec")
-    mon_p.add_argument("--access", required=True, help="Path to access document")
     mon_p.add_argument(
         "--exec",
         dest="exec_command",
@@ -476,10 +548,9 @@ def main() -> None:
     if args.command == "build":
         report = cmd_build(
             args.service,
-            args.spec,
-            args.access,
             model=args.model,
             max_turns=args.max_turns,
+            timeout=args.audit_timeout,
             force=args.force,
         )
         if report.get("overall") in ("fail", "error"):
@@ -498,8 +569,6 @@ def main() -> None:
     elif args.command == "monitor":
         report = cmd_monitor(
             args.service,
-            args.spec,
-            args.access,
             exec_command=args.exec_command,
             model=args.model,
             max_turns=args.max_turns,
