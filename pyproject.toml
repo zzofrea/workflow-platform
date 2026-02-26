@@ -25,7 +25,6 @@ dev = [
 
 [project.scripts]
 workflow-env = "workflow_platform.workflow_env:main"
-workflow-audit = "workflow_platform.auditor:main"
 workflow-orchestrate = "workflow_platform.orchestrate:main"
 workflow-health = "workflow_platform.health:main"
 
