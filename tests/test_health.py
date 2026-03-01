@@ -13,6 +13,7 @@ import pytest
 from workflow_platform.health import (
     BOOT_DELAY_SECONDS,
     EXPECTED_CONTAINERS,
+    _find_container_status,
     _get_container_statuses,
     _get_disk_usage,
     _get_memory_usage,
@@ -96,6 +97,58 @@ class TestIsDockerAvailable:
         mock_result.returncode = 1
         with patch("workflow_platform.health.subprocess.run", return_value=mock_result):
             assert _is_docker_available() is False
+
+
+class TestFindContainerStatus:
+    def test_exact_match(self) -> None:
+        statuses = {"dokploy": "Up 3 weeks", "dokploy-redis": "Up 3 weeks"}
+        assert _find_container_status("dokploy", statuses) == "Up 3 weeks"
+
+    def test_prefix_match_with_swarm_suffix(self) -> None:
+        statuses = {"dokploy.1.k8u2c7n14id8z753sq326dhvh": "Up 3 weeks"}
+        assert _find_container_status("dokploy", statuses) == "Up 3 weeks"
+
+    def test_substring_match_with_compose_prefix(self) -> None:
+        statuses = {"compose-parse-back-end-bus-tqs6jx-crowdsec-1": "Up 2 days"}
+        assert _find_container_status("crowdsec", statuses) == "Up 2 days"
+
+    def test_no_match_returns_empty(self) -> None:
+        statuses = {"dokploy": "Up 3 weeks"}
+        assert _find_container_status("nonexistent", statuses) == ""
+
+    def test_exact_match_preferred_over_prefix(self) -> None:
+        statuses = {
+            "n8n": "Up 1 day",
+            "n8n-postgres": "Up 1 day",
+        }
+        assert _find_container_status("n8n", statuses) == "Up 1 day"
+
+
+class TestCmdCheckSwarmSuffixes:
+    """GIVEN Docker Swarm appends suffixes to container names.
+    WHEN the health check runs.
+    THEN all containers still match via prefix and report success.
+    """
+
+    def test_swarm_suffixed_containers_match(self) -> None:
+        statuses = {f"{name}.1.abc123def456": "Up 3 weeks" for name in EXPECTED_CONTAINERS}
+        with (
+            patch("workflow_platform.health._is_docker_available", return_value=True),
+            patch(
+                "workflow_platform.health._get_disk_usage",
+                return_value=[{"mount": "/", "percent": 42.0}],
+            ),
+            patch("workflow_platform.health._get_memory_usage", return_value=50.0),
+            patch(
+                "workflow_platform.health._get_container_statuses",
+                return_value=statuses,
+            ),
+            patch("workflow_platform.health._notify") as mock_notify,
+        ):
+            cmd_check()
+
+        severity, _message = mock_notify.call_args[0]
+        assert severity == "success"
 
 
 # -- Acceptance tests for cmd_check --
@@ -203,7 +256,7 @@ class TestCmdCheckMissingContainers:
     def test_missing_container_sends_warning(self) -> None:
         statuses = _make_all_containers_up()
         statuses["n8n"] = "Exited (1) 2 hours ago"
-        del statuses["obsidian-remote"]
+        del statuses["crowdsec"]
 
         with (
             patch("workflow_platform.health._is_docker_available", return_value=True),
@@ -223,7 +276,7 @@ class TestCmdCheckMissingContainers:
         severity, message = mock_notify.call_args[0]
         assert severity == "warning"
         assert "n8n" in message
-        assert "obsidian-remote" in message
+        assert "crowdsec" in message
 
 
 class TestCmdCheckMultipleFindings:
