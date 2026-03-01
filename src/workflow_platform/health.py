@@ -22,6 +22,8 @@ log = structlog.get_logger("workflow_platform.health")
 
 # Containers that should be running in steady state.
 # Update this list when services are added or removed.
+# Names are matched as prefixes so Docker Swarm suffixes
+# (e.g. "dokploy.1.k8u2c7n14id8") still match.
 EXPECTED_CONTAINERS: list[str] = [
     "dokploy",
     "dokploy-postgres",
@@ -37,13 +39,19 @@ EXPECTED_CONTAINERS: list[str] = [
     # n8n
     "n8n",
     "n8n-postgres",
-    # Bid scraper
-    "bid-scraper-postgres",
-    "bid-scraper-scraper",
+    # Bid scraper (Dokploy compose name: compose-bypass-solid-state-feed-6p6e3c)
+    "compose-bypass-solid-state-feed-6p6e3c-postgres",
     # Discord capture bot
     "discord-capture-bot",
-    # Obsidian
-    "obsidian-remote",
+    # Monitoring stack
+    "monitoring-cadvisor",
+    "monitoring-grafana",
+    "monitoring-node-exporter",
+    "monitoring-prometheus",
+    # Security
+    "workflow-sentinel",
+    # Dokploy compose name: compose-parse-back-end-bus-tqs6jx
+    "crowdsec",
 ]
 
 # Thresholds -- generous, only flag obvious problems.
@@ -52,6 +60,25 @@ MEMORY_WARN_PERCENT = 90
 
 # Boot stabilization delay in seconds.
 BOOT_DELAY_SECONDS = 300  # 5 minutes
+
+
+def _find_container_status(expected: str, statuses: dict[str, str]) -> str:
+    """Find status for an expected container using flexible name matching.
+
+    Docker Swarm appends suffixes (``dokploy.1.k8u2c7n14id8``) and
+    Dokploy compose services get long prefixes
+    (``compose-parse-back-end-bus-tqs6jx-crowdsec-1``).  We try three
+    strategies in order: exact match, prefix match, then substring match.
+    """
+    if expected in statuses:
+        return statuses[expected]
+    for actual_name, status in statuses.items():
+        if actual_name.startswith(expected):
+            return status
+    for actual_name, status in statuses.items():
+        if expected in actual_name:
+            return status
+    return ""
 
 
 def _get_disk_usage() -> list[dict[str, str | float]]:
@@ -211,7 +238,7 @@ def cmd_check() -> None:
     running_count = 0
     missing: list[str] = []
     for name in EXPECTED_CONTAINERS:
-        status = container_statuses.get(name, "")
+        status = _find_container_status(name, container_statuses)
         if status.startswith("Up"):
             running_count += 1
         else:
@@ -285,7 +312,7 @@ def cmd_boot() -> None:
     missing_expected = [
         name
         for name in EXPECTED_CONTAINERS
-        if name not in container_statuses or not container_statuses[name].startswith("Up")
+        if not _find_container_status(name, container_statuses).startswith("Up")
     ]
 
     # Build message
