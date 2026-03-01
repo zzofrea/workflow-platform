@@ -8,7 +8,7 @@ Migrate the bid-scraper service from its legacy orchestration layer (`run-and-au
 
 ### Service Execution
 
-- When `workflow-orchestrate monitor --service bid-scraper --exec "python -m bid_scraper run"` is invoked, the system executes the scraper via `docker exec` against the `compose-bypass-solid-state-feed-6p6e3c-scraper-1` container, then runs the behavioral audit.
+- When `workflow-orchestrate monitor --service bid-scraper --exec "python -m bid_scraper run"` is invoked, the system executes the scraper via `docker exec` against the `bid-scraper` container, then runs the behavioral audit.
 - When the scraper command succeeds (exit 0), the system proceeds to the audit phase.
 - When the scraper command fails (exit non-zero, e.g., Bonfire portal timeout), the system logs the failure, sends a `warning` notification, and still proceeds to the audit phase.
 

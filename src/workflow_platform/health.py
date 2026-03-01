@@ -29,29 +29,22 @@ EXPECTED_CONTAINERS: list[str] = [
     "dokploy-postgres",
     "dokploy-redis",
     "dokploy-traefik",
-    # Cloudflare tunnel
     "cloudflared",
-    # Open WebUI
-    "openwebui-la7vl8-open-webui-1",
-    # DefenderShield ETL
-    "ds-etl-nhdcjb-postgres-1",
-    "ds-etl-nhdcjb-etl-scheduler-1",
-    # n8n
+    "open-webui",
+    "etl-postgres",
+    "etl-scheduler",
     "n8n",
     "n8n-postgres",
-    # Bid scraper (Dokploy compose name: compose-bypass-solid-state-feed-6p6e3c)
-    "compose-bypass-solid-state-feed-6p6e3c-postgres",
-    # Discord capture bot
+    "bid-scraper-postgres",
     "discord-capture-bot",
-    # Monitoring stack
     "monitoring-cadvisor",
     "monitoring-grafana",
     "monitoring-node-exporter",
     "monitoring-prometheus",
-    # Security
     "workflow-sentinel",
-    # Dokploy compose name: compose-parse-back-end-bus-tqs6jx
     "crowdsec",
+    "dozzle",
+    "homepage",
 ]
 
 # Thresholds -- generous, only flag obvious problems.
@@ -65,10 +58,9 @@ BOOT_DELAY_SECONDS = 300  # 5 minutes
 def _find_container_status(expected: str, statuses: dict[str, str]) -> str:
     """Find status for an expected container using flexible name matching.
 
-    Docker Swarm appends suffixes (``dokploy.1.k8u2c7n14id8``) and
-    Dokploy compose services get long prefixes
-    (``compose-parse-back-end-bus-tqs6jx-crowdsec-1``).  We try three
-    strategies in order: exact match, prefix match, then substring match.
+    Docker Swarm appends suffixes (``dokploy.1.k8u2c7n14id8``).
+    We try three strategies in order: exact match, prefix match,
+    then substring match.
     """
     if expected in statuses:
         return statuses[expected]
