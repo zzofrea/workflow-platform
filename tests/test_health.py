@@ -109,7 +109,7 @@ class TestFindContainerStatus:
         assert _find_container_status("dokploy", statuses) == "Up 3 weeks"
 
     def test_substring_match_with_compose_prefix(self) -> None:
-        statuses = {"compose-parse-back-end-bus-tqs6jx-crowdsec-1": "Up 2 days"}
+        statuses = {"crowdsec": "Up 2 days"}
         assert _find_container_status("crowdsec", statuses) == "Up 2 days"
 
     def test_no_match_returns_empty(self) -> None:

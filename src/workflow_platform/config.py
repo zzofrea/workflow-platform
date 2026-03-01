@@ -21,6 +21,6 @@ class PlatformConfig(BaseSettings):
 
     # Service-to-container mapping for docker exec
     service_containers: dict[str, str] = {
-        "defendershield-etl": "ds-etl-nhdcjb-etl-scheduler-1",
-        "bid-scraper": "compose-bypass-solid-state-feed-6p6e3c-scraper-1",
+        "defendershield-etl": "etl-scheduler",
+        "bid-scraper": "bid-scraper",
     }

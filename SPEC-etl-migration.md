@@ -101,7 +101,7 @@ THEN a `warning` notification is sent about the exec failure, and the auditor st
 ### Error Paths
 
 **Scenario 4: Container not running**
-GIVEN the ETL container (`ds-etl-nhdcjb-etl-scheduler-1`) is stopped or does not exist.
+GIVEN the ETL container (`etl-scheduler`) is stopped or does not exist.
 WHEN the monitor command attempts to execute with `--exec`.
 THEN a `critical` notification is sent (Discord + Vault + Email), no `docker exec` is attempted, no audit runs, and the command exits non-zero.
 
@@ -124,7 +124,7 @@ THEN the error is logged, the audit report is still archived locally, and the co
 
 ## Resolved Ambiguities
 
-1. **Container name resolution.** **Resolved:** `service_containers` dict in `PlatformConfig` (`config.py`). Maps service name to Docker container name. Initial entries: `defendershield-etl` -> `ds-etl-nhdcjb-etl-scheduler-1`, `bid-scraper` -> `compose-bypass-solid-state-feed-6p6e3c-scraper-1`.
+1. **Container name resolution.** **Resolved:** `service_containers` dict in `PlatformConfig` (`config.py`). Maps service name to Docker container name. Initial entries: `defendershield-etl` -> `etl-scheduler`, `bid-scraper` -> `bid-scraper`.
 
 2. **Exec stdout/stderr handling.** **Resolved:** Saved to `exec_output.log` in the same archive directory as the audit report (`~/audit-reports/{service}/prod_{timestamp}/exec_output.log`).
 
