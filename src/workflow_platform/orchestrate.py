@@ -130,6 +130,19 @@ def _run_workflow_agent(
     }
 
 
+def _push_metrics(service: str, report: dict[str, Any]) -> None:
+    """Push agent run metrics to Prometheus Pushgateway (best-effort)."""
+    try:
+        from workflow_platform.metrics import push_metrics
+
+        role = report.get("role", "auditor")
+        push_metrics(service, role, report)
+    except ImportError:
+        log.warning("orchestrate.metrics_unavailable", reason="prometheus_client not installed")
+    except Exception as exc:
+        log.warning("orchestrate.metrics_push_failed", service=service, error=str(exc))
+
+
 def _confirm(prompt: str) -> bool:
     """Ask for human confirmation. Returns True if approved."""
     try:
@@ -177,7 +190,10 @@ def cmd_build(
         timeout=timeout,
     )
 
-    # Step 3: Present report
+    # Step 3: Push metrics
+    _push_metrics(service, report)
+
+    # Step 4: Present report
     overall = report.get("overall", "error")
     print(f"\n--- Audit Result: {overall.upper()} ---")
 
@@ -480,6 +496,9 @@ def cmd_monitor(
             exec_log_path = report_dir / "exec_output.log"
             exec_log_path.write_text(exec_log_content)
             log.info("orchestrate.exec_log_saved", path=str(exec_log_path))
+
+    # Push metrics
+    _push_metrics(service, report)
 
     overall = report.get("overall", "error")
     print(f"\nMonitor result: {overall.upper()}")
