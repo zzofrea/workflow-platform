@@ -140,6 +140,22 @@ class TestDAGValidation:
         with pytest.raises(ValueError, match="Invalid day abbreviation"):
             Stage(name="s", type="agent", role="r", when=["monday"])
 
+    def test_invalid_when_day_of_month_zero_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid day of month"):
+            Stage(name="s", type="agent", role="r", when_day_of_month=[0])
+
+    def test_invalid_when_day_of_month_32_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid day of month"):
+            Stage(name="s", type="agent", role="r", when_day_of_month=[32])
+
+    def test_valid_when_day_of_month_accepted(self) -> None:
+        stage = Stage(name="s", type="agent", role="r", when_day_of_month=[1])
+        assert stage.when_day_of_month == [1]
+
+    def test_when_day_of_month_multiple_days(self) -> None:
+        stage = Stage(name="s", type="agent", role="r", when_day_of_month=[1, 15])
+        assert stage.when_day_of_month == [1, 15]
+
 
 # -- DAG Loading --
 
@@ -148,8 +164,10 @@ class TestLoadDAG:
     def test_loads_real_etl_dag(self) -> None:
         dag = load_dag("defendershield-etl")
         assert dag.service == "defendershield-etl"
-        assert len(dag.stages) == 3
+        assert len(dag.stages) == 4
         assert dag.stages[0].name == "etl-pipeline"
+        assert dag.stages[3].name == "monthly-analyst"
+        assert dag.stages[3].when_day_of_month == [1]
 
     def test_missing_dag_raises(self) -> None:
         with pytest.raises(FileNotFoundError, match="DAG config not found"):
@@ -189,6 +207,77 @@ class TestFilterStages:
         active, filtered = filter_stages(stages, wednesday)
         assert active == []
         assert filtered == ["sat-only"]
+
+
+# -- Day-of-Month Filtering --
+
+
+class TestFilterStagesByDayOfMonth:
+    def test_first_of_month_includes_monthly_stage(self) -> None:
+        stages = [
+            Stage(name="daily", type="agent", role="auditor"),
+            Stage(name="monthly", type="agent", role="monthly-analyst", when_day_of_month=[1]),
+        ]
+        march_1 = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+        active, filtered = filter_stages(stages, march_1)
+        assert len(active) == 2
+        assert filtered == []
+
+    def test_mid_month_excludes_monthly_stage(self) -> None:
+        stages = [
+            Stage(name="daily", type="agent", role="auditor"),
+            Stage(name="monthly", type="agent", role="monthly-analyst", when_day_of_month=[1]),
+        ]
+        march_15 = datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
+        active, filtered = filter_stages(stages, march_15)
+        assert len(active) == 1
+        assert active[0].name == "daily"
+        assert filtered == ["monthly"]
+
+    def test_day_of_week_and_day_of_month_coexist(self) -> None:
+        """Weekly and monthly stages can both run on the same day."""
+        stages = [
+            Stage(name="daily", type="agent", role="auditor"),
+            Stage(name="weekly", type="agent", role="analyst", when=["mon"]),
+            Stage(name="monthly", type="agent", role="monthly-analyst", when_day_of_month=[1]),
+        ]
+        # March 2, 2026 is a Monday AND the 2nd -- weekly runs, monthly doesn't
+        march_2_mon = datetime(2026, 3, 2, 12, 0, tzinfo=UTC)
+        active, filtered = filter_stages(stages, march_2_mon)
+        assert {s.name for s in active} == {"daily", "weekly"}
+        assert "monthly" in filtered
+
+    def test_first_of_month_that_is_also_monday(self) -> None:
+        """Both weekly and monthly stages run when the 1st falls on a Monday."""
+        stages = [
+            Stage(name="weekly", type="agent", role="analyst", when=["thu"]),
+            Stage(name="monthly", type="agent", role="monthly-analyst", when_day_of_month=[1]),
+        ]
+        # Jan 1, 2026 is a Thursday
+        jan_1_thu = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+        active, filtered = filter_stages(stages, jan_1_thu)
+        assert len(active) == 2
+        assert filtered == []
+
+    def test_multiple_days_of_month(self) -> None:
+        stages = [
+            Stage(name="bimonthly", type="agent", role="r", when_day_of_month=[1, 15]),
+        ]
+        march_15 = datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
+        active, filtered = filter_stages(stages, march_15)
+        assert len(active) == 1
+        assert filtered == []
+
+    def test_day_31_skipped_in_short_months(self) -> None:
+        """Day 31 naturally doesn't fire in months with fewer days."""
+        stages = [
+            Stage(name="end-of-month", type="agent", role="r", when_day_of_month=[31]),
+        ]
+        # Feb 28, 2026 -- day 28, not 31
+        feb_28 = datetime(2026, 2, 28, 12, 0, tzinfo=UTC)
+        active, filtered = filter_stages(stages, feb_28)
+        assert active == []
+        assert filtered == ["end-of-month"]
 
 
 # -- Topological Sort --
