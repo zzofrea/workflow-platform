@@ -507,6 +507,29 @@ def cmd_monitor(
     return report
 
 
+# -- DAG command --
+
+
+def cmd_dag(service: str) -> None:
+    """Load and execute a DAG for a service. Exits 1 if any stage failed."""
+    from workflow_platform.dag import StageResult, execute_dag, load_dag
+
+    log.info("orchestrate.dag_start", service=service)
+
+    try:
+        dag = load_dag(service)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        log.error("orchestrate.dag_load_failed", service=service, error=str(exc))
+        sys.exit(1)
+
+    results = execute_dag(dag)
+
+    any_failed = any(r in (StageResult.FAIL, StageResult.ERROR) for r in results.values())
+    if any_failed:
+        sys.exit(1)
+
+
 # -- CLI --
 
 
@@ -541,6 +564,10 @@ def main() -> None:
         action="store_true",
         help="Skip audit report verification (not recommended)",
     )
+
+    # DAG
+    dag_p = sub.add_parser("dag", help="Execute a YAML-defined DAG for a service")
+    dag_p.add_argument("service", help="Service name (matches dags/<service>.yaml)")
 
     # Monitor
     mon_p = sub.add_parser(
@@ -584,6 +611,9 @@ def main() -> None:
         )
         if not ok:
             sys.exit(1)
+
+    elif args.command == "dag":
+        cmd_dag(args.service)
 
     elif args.command == "monitor":
         report = cmd_monitor(
