@@ -54,6 +54,9 @@ class Stage(BaseModel):
     role: str | None = None
     max_turns: int = 50
 
+    # day-of-month filtering (e.g. [1] for 1st of month)
+    when_day_of_month: list[int] | None = None
+
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
@@ -71,6 +74,16 @@ class Stage(BaseModel):
                     msg = f"Invalid day abbreviation '{day}'. Must be one of: {DAY_ABBREVS}"
                     raise ValueError(msg)
             return [d.lower() for d in v]
+        return v
+
+    @field_validator("when_day_of_month")
+    @classmethod
+    def validate_when_day_of_month(cls, v: list[int] | None) -> list[int] | None:
+        if v is not None:
+            for day in v:
+                if not isinstance(day, int) or day < 1 or day > 31:
+                    msg = f"Invalid day of month '{day}'. Must be an integer 1-31."
+                    raise ValueError(msg)
         return v
 
     @model_validator(mode="after")
@@ -172,14 +185,22 @@ def load_dag(service: str) -> DAGConfig:
 
 
 def filter_stages(stages: list[Stage], utc_now: datetime) -> tuple[list[Stage], list[str]]:
-    """Filter stages by day-of-week. Returns (active_stages, filtered_out_names)."""
+    """Filter stages by day-of-week and/or day-of-month.
+
+    Returns (active_stages, filtered_out_names).
+    """
     today_idx = utc_now.weekday()  # 0=Monday
+    today_day = utc_now.day  # 1-31
     active: list[Stage] = []
     filtered_out: list[str] = []
 
     for stage in stages:
         if stage.when is not None:
             if today_idx not in [DAY_INDEX[d] for d in stage.when]:
+                filtered_out.append(stage.name)
+                continue
+        if stage.when_day_of_month is not None:
+            if today_day not in stage.when_day_of_month:
                 filtered_out.append(stage.name)
                 continue
         active.append(stage)

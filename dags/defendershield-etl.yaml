@@ -20,3 +20,11 @@ stages:
     when: [mon]
     max_turns: 40
     timeout: 600
+  - name: monthly-analyst
+    type: agent
+    role: monthly-analyst
+    depends_on: [auditor]
+    condition: etl-pipeline.success
+    when_day_of_month: [1]
+    max_turns: 40
+    timeout: 600
