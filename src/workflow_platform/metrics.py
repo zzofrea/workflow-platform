@@ -17,7 +17,13 @@ log = structlog.get_logger("workflow_platform.metrics")
 PUSHGATEWAY_URL = os.environ.get("PUSHGATEWAY_URL", "localhost:9091")
 
 
-def push_metrics(service: str, role: str, report: dict[str, Any]) -> None:
+def push_metrics(
+    service: str,
+    role: str,
+    report: dict[str, Any],
+    *,
+    stage: str | None = None,
+) -> None:
     """Push agent run metrics to Pushgateway.
 
     Args:
@@ -25,51 +31,62 @@ def push_metrics(service: str, role: str, report: dict[str, Any]) -> None:
         role: Agent role name (e.g., "auditor").
         report: The agent report dict with overall, duration_seconds,
             scenarios_pass, scenarios_fail fields.
+        stage: Optional stage name for per-stage DAG metrics granularity.
     """
     registry = CollectorRegistry()
+
+    label_names = ["service", "role"]
+    if stage is not None:
+        label_names.append("stage")
 
     result_gauge = Gauge(
         "agent_run_result",
         "Agent run result (1=pass, 0=fail)",
-        ["service", "role"],
+        label_names,
         registry=registry,
     )
     duration_gauge = Gauge(
         "agent_run_duration_seconds",
         "Agent run duration in seconds",
-        ["service", "role"],
+        label_names,
         registry=registry,
     )
     pass_gauge = Gauge(
         "agent_run_scenarios_pass",
         "Number of scenarios that passed",
-        ["service", "role"],
+        label_names,
         registry=registry,
     )
     fail_gauge = Gauge(
         "agent_run_scenarios_fail",
         "Number of scenarios that failed",
-        ["service", "role"],
+        label_names,
         registry=registry,
     )
 
     overall = report.get("overall", "error")
     normalized = 1 if overall in ("pass", "complete") else 0
 
-    result_gauge.labels(service=service, role=role).set(normalized)
-    duration_gauge.labels(service=service, role=role).set(report.get("duration_seconds", 0))
-    pass_gauge.labels(service=service, role=role).set(report.get("scenarios_pass", 0))
-    fail_gauge.labels(service=service, role=role).set(report.get("scenarios_fail", 0))
+    labels: dict[str, str] = {"service": service, "role": role}
+    if stage is not None:
+        labels["stage"] = stage
 
+    result_gauge.labels(**labels).set(normalized)
+    duration_gauge.labels(**labels).set(report.get("duration_seconds", 0))
+    pass_gauge.labels(**labels).set(report.get("scenarios_pass", 0))
+    fail_gauge.labels(**labels).set(report.get("scenarios_fail", 0))
+
+    job_suffix = f"_{stage}" if stage else ""
     push_to_gateway(
         PUSHGATEWAY_URL,
-        job=f"workflow_agent_{service}_{role}",
+        job=f"workflow_agent_{service}_{role}{job_suffix}",
         registry=registry,
     )
     log.info(
         "metrics.pushed",
         service=service,
         role=role,
+        stage=stage,
         overall=overall,
         normalized=normalized,
     )

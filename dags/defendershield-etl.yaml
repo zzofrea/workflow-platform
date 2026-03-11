@@ -1,0 +1,22 @@
+service: defendershield-etl
+schedule: "15 11 * * *"
+stages:
+  - name: etl-pipeline
+    type: docker-exec
+    container: etl-scheduler
+    command: "python -m defendershield_etl.pipelines.daily_runner --catchup"
+    timeout: 3600
+  - name: auditor
+    type: agent
+    role: auditor
+    depends_on: [etl-pipeline]
+    max_turns: 25
+    timeout: 600
+  - name: analyst
+    type: agent
+    role: analyst
+    depends_on: [auditor]
+    condition: etl-pipeline.success
+    when: [mon]
+    max_turns: 40
+    timeout: 600
