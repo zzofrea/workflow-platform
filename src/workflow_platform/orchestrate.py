@@ -510,6 +510,37 @@ def cmd_monitor(
 # -- DAG command --
 
 
+def _notify_dag_result(service: str, results: dict[str, Any], failed: bool) -> None:
+    """Send a notification with the DAG execution result."""
+    try:
+        from workflow_notify import NotifyConfig, fanout
+
+        summary = ", ".join(f"{k}: {v.value}" for k, v in results.items())
+
+        if failed:
+            failed_stages = [k for k, v in results.items() if v.value in ("fail", "error")]
+            fanout(
+                config=NotifyConfig(),
+                service=service,
+                severity="warning",
+                message=f"DAG FAILED for {service}. Failed stages: {', '.join(failed_stages)}",
+                observation=summary,
+                suggested_action="Check logs: ~/logs/workflow-monitor.log",
+            )
+        else:
+            fanout(
+                config=NotifyConfig(),
+                service=service,
+                severity="success",
+                message=f"DAG completed for {service}. All stages passed.",
+                observation=summary,
+            )
+    except ImportError:
+        log.warning("orchestrate.notify_unavailable")
+    except Exception as exc:
+        log.warning("orchestrate.notify_failed", error=str(exc))
+
+
 def cmd_dag(service: str) -> None:
     """Load and execute a DAG for a service. Exits 1 if any stage failed."""
     from workflow_platform.dag import StageResult, execute_dag, load_dag
@@ -526,6 +557,7 @@ def cmd_dag(service: str) -> None:
     results = execute_dag(dag)
 
     any_failed = any(r in (StageResult.FAIL, StageResult.ERROR) for r in results.values())
+    _notify_dag_result(service, results, any_failed)
     if any_failed:
         sys.exit(1)
 
