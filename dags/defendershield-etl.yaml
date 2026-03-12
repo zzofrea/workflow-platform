@@ -12,19 +12,19 @@ stages:
     depends_on: [etl-pipeline]
     max_turns: 25
     timeout: 600
-  - name: analyst
-    type: agent
-    role: analyst
+  - name: weekly-report
+    type: docker-exec
+    container: etl-scheduler
+    command: "python -m defendershield_etl.reports.weekly"
     depends_on: [auditor]
     condition: etl-pipeline.success
     when: [mon]
-    max_turns: 40
-    timeout: 600
-  - name: monthly-analyst
-    type: agent
-    role: monthly-analyst
+    timeout: 120
+  - name: monthly-report
+    type: docker-exec
+    container: etl-scheduler
+    command: "python -m defendershield_etl.reports.monthly"
     depends_on: [auditor]
     condition: etl-pipeline.success
     when_day_of_month: [1]
-    max_turns: 40
-    timeout: 600
+    timeout: 120

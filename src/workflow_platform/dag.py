@@ -356,7 +356,11 @@ def _execute_docker_exec(
         return StageResult.ERROR
 
     # Archive exec output
-    archive_exec_output(service, stage.name, stdout, stderr, exit_code)
+    output_path = archive_exec_output(service, stage.name, stdout, stderr, exit_code)
+
+    # Copy report artifacts from container if they exist
+    if exit_code == 0 and output_path is not None:
+        _copy_report_artifacts(container, output_path.parent)
 
     return StageResult.PASS if exit_code == 0 else StageResult.FAIL
 
@@ -414,6 +418,30 @@ def archive_exec_output(
     except OSError as exc:
         log.warning("dag.archive_failed", error=str(exc))
         return None
+
+
+def _copy_report_artifacts(container: str, archive_dir: Path) -> None:
+    """Copy report artifacts from container /tmp/ to archive directory.
+
+    Best-effort: logs warnings on failure, does not affect stage result.
+    """
+    import subprocess
+
+    artifacts = ["report_metrics.json", "report_email.html"]
+    for filename in artifacts:
+        try:
+            result = subprocess.run(
+                ["docker", "cp", f"{container}:/tmp/{filename}", str(archive_dir / filename)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                log.info("dag.artifact_copied", file=filename, dest=str(archive_dir))
+            else:
+                log.debug("dag.artifact_not_found", file=filename)
+        except Exception as exc:
+            log.warning("dag.artifact_copy_failed", file=filename, error=str(exc))
 
 
 def _push_stage_metrics(
