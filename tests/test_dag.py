@@ -166,7 +166,7 @@ class TestLoadDAG:
         assert dag.service == "defendershield-etl"
         assert len(dag.stages) == 4
         assert dag.stages[0].name == "etl-pipeline"
-        assert dag.stages[3].name == "monthly-analyst"
+        assert dag.stages[3].name == "monthly-report"
         assert dag.stages[3].when_day_of_month == [1]
 
     def test_missing_dag_raises(self) -> None:
