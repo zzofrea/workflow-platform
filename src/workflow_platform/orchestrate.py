@@ -526,6 +526,7 @@ def _notify_dag_result(service: str, results: dict[str, Any], failed: bool) -> N
                 message=f"DAG FAILED for {service}. Failed stages: {', '.join(failed_stages)}",
                 observation=summary,
                 suggested_action="Check logs: ~/logs/workflow-monitor.log",
+                channel="agent_logs",
             )
         else:
             fanout(
@@ -534,6 +535,7 @@ def _notify_dag_result(service: str, results: dict[str, Any], failed: bool) -> N
                 severity="success",
                 message=f"DAG completed for {service}. All stages passed.",
                 observation=summary,
+                channel="agent_logs",
             )
     except ImportError:
         log.warning("orchestrate.notify_unavailable")
