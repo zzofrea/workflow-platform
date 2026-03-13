@@ -378,7 +378,7 @@ class TestExecuteStage:
 
     def test_agent_pass(self) -> None:
         stage = Stage(name="audit", type="agent", role="auditor")
-        mock_agent = MagicMock(return_value={"overall": "pass"})
+        mock_agent = MagicMock(return_value=({"overall": "pass"}, "test1234"))
         mock_push = MagicMock()
 
         result = execute_stage(
@@ -395,7 +395,7 @@ class TestExecuteStage:
 
     def test_agent_complete_is_success(self) -> None:
         stage = Stage(name="analyst", type="agent", role="analyst")
-        mock_agent = MagicMock(return_value={"overall": "complete"})
+        mock_agent = MagicMock(return_value=({"overall": "complete"}, "test1234"))
         mock_push = MagicMock()
 
         result = execute_stage(
@@ -411,7 +411,7 @@ class TestExecuteStage:
 
     def test_agent_fail(self) -> None:
         stage = Stage(name="audit", type="agent", role="auditor")
-        mock_agent = MagicMock(return_value={"overall": "fail"})
+        mock_agent = MagicMock(return_value=({"overall": "fail"}, "test1234"))
         mock_push = MagicMock()
 
         result = execute_stage(
@@ -453,7 +453,7 @@ class TestExecuteStage:
             condition="exec.success",
         )
         results = {"exec": StageResult.PASS}
-        mock_agent = MagicMock(return_value={"overall": "complete"})
+        mock_agent = MagicMock(return_value=({"overall": "complete"}, "test1234"))
         mock_push = MagicMock()
 
         result = execute_stage(
@@ -489,7 +489,7 @@ class TestExecuteStage:
 
     def test_metrics_pushed_per_stage(self) -> None:
         stage = Stage(name="audit", type="agent", role="auditor")
-        mock_agent = MagicMock(return_value={"overall": "pass"})
+        mock_agent = MagicMock(return_value=({"overall": "pass"}, "test1234"))
         mock_push = MagicMock()
 
         execute_stage(
@@ -525,7 +525,7 @@ class TestExecuteDAG:
         )
         mock_exec = MagicMock(return_value=(0, "ok", ""))
         mock_check = MagicMock(return_value=True)
-        mock_agent = MagicMock(return_value={"overall": "pass"})
+        mock_agent = MagicMock(return_value=({"overall": "pass"}, "test1234"))
         mock_push = MagicMock()
 
         results = execute_dag(
@@ -556,7 +556,7 @@ class TestExecuteDAG:
         )
         mock_exec = MagicMock(return_value=(1, "", "error"))
         mock_check = MagicMock(return_value=True)
-        mock_agent = MagicMock(return_value={"overall": "pass"})
+        mock_agent = MagicMock(return_value=({"overall": "pass"}, "test1234"))
         mock_push = MagicMock()
 
         results = execute_dag(
@@ -581,7 +581,7 @@ class TestExecuteDAG:
         )
         # Tuesday -- exec gets filtered out
         tuesday = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
-        mock_agent = MagicMock(return_value={"overall": "pass"})
+        mock_agent = MagicMock(return_value=({"overall": "pass"}, "test1234"))
         mock_push = MagicMock()
 
         results = execute_dag(
@@ -644,7 +644,7 @@ class TestExecuteDAG:
         )
         mock_exec = MagicMock(return_value=(0, "ok", ""))
         mock_check = MagicMock(return_value=True)
-        mock_agent = MagicMock(return_value={"overall": "pass"})
+        mock_agent = MagicMock(return_value=({"overall": "pass"}, "test1234"))
         mock_push = MagicMock()
 
         results = execute_dag(
