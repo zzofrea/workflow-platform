@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -37,31 +38,62 @@ log = structlog.get_logger("workflow_platform.orchestrate")
 WORKFLOW_AGENT_CLI = Path.home() / "workflow-agent" / ".venv" / "bin" / "workflow-agent"
 
 
-def _latest_report(service: str) -> dict[str, Any] | None:
-    """Find the most recent audit report for a service."""
+def _find_report_by_run_id(service: str, run_id: str) -> dict[str, Any] | None:
+    """Find a report by exact run_id suffix in the directory name."""
     reports_dir = Path.home() / "agent-output" / service
     if not reports_dir.exists():
         return None
 
-    # Reports are stored as {role}_{timestamp}/ dirs -- sort to get latest
-    subdirs = sorted(reports_dir.iterdir(), reverse=True)
-    for d in subdirs:
+    for d in reports_dir.iterdir():
+        if d.is_dir() and d.name.endswith(f"_{run_id}"):
+            report_path = d / "report.json"
+            if report_path.exists():
+                with open(report_path) as f:
+                    return json.load(f)
+    return None
+
+
+def _find_report_dir_by_run_id(service: str, run_id: str) -> Path | None:
+    """Find a report directory by exact run_id suffix."""
+    reports_dir = Path.home() / "agent-output" / service
+    if not reports_dir.exists():
+        return None
+
+    for d in reports_dir.iterdir():
+        if d.is_dir() and d.name.endswith(f"_{run_id}") and (d / "report.json").exists():
+            return d
+    return None
+
+
+def _latest_report(
+    service: str,
+    role: str | None = None,
+) -> dict[str, Any] | None:
+    """Find the most recent report for a service, optionally filtered by role.
+
+    Directories are named ``{role}_{timestamp}[_{run_id}]`` so we filter
+    by prefix when *role* is provided and sort by modification time
+    (newest first).
+
+    For deterministic lookup by a specific execution, use
+    ``_find_report_by_run_id`` instead.
+    """
+    reports_dir = Path.home() / "agent-output" / service
+    if not reports_dir.exists():
+        return None
+
+    candidates = (
+        [d for d in reports_dir.iterdir() if d.is_dir() and d.name.startswith(f"{role}_")]
+        if role
+        else [d for d in reports_dir.iterdir() if d.is_dir()]
+    )
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    for d in candidates:
         report_path = d / "report.json"
         if report_path.exists():
             with open(report_path) as f:
                 return json.load(f)
-    return None
-
-
-def _latest_report_dir(service: str) -> Path | None:
-    """Find the most recent audit report directory for a service."""
-    reports_dir = Path.home() / "agent-output" / service
-    if not reports_dir.exists():
-        return None
-    subdirs = sorted(reports_dir.iterdir(), reverse=True)
-    for d in subdirs:
-        if (d / "report.json").exists():
-            return d
     return None
 
 
@@ -73,11 +105,15 @@ def _run_workflow_agent(
     max_turns: int = 50,
     timeout: int = 600,
     no_notify: bool = False,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str]:
     """Shell out to workflow-agent CLI to run an agent.
 
-    Returns the report dict from the archived output.
+    Returns ``(report_dict, run_id)``.  The run_id is passed to the CLI
+    and embedded in the archive directory name so the orchestrator can
+    look up the exact report for *this* invocation -- no mtime guessing.
     """
+    run_id = uuid.uuid4().hex[:8]
+
     cmd: list[str] = [
         str(WORKFLOW_AGENT_CLI),
         "run",
@@ -90,6 +126,8 @@ def _run_workflow_agent(
         str(max_turns),
         "--timeout",
         str(timeout),
+        "--run-id",
+        run_id,
     ]
     if no_notify:
         cmd.append("--no-notify")
@@ -99,6 +137,7 @@ def _run_workflow_agent(
         service=service,
         role=role,
         model=model,
+        run_id=run_id,
         cmd=" ".join(cmd),
     )
     print(f"Running: {' '.join(cmd)}")
@@ -115,19 +154,21 @@ def _run_workflow_agent(
     if result.stderr:
         print(result.stderr, file=sys.stderr)
 
-    # Read the report from the archive directory
-    report = _latest_report(service)
+    # Deterministic lookup: find the report archived with our run_id
+    report = _find_report_by_run_id(service, run_id)
     if report is not None:
-        return report
+        return report, run_id
 
-    # Fallback: no report found
+    # Fallback: agent produced no report for this run
     return {
         "overall": "error",
         "service": service,
         "role": role,
-        "summary": f"workflow-agent exited {result.returncode} but no report found",
+        "summary": (
+            f"workflow-agent exited {result.returncode} but no report found (run_id={run_id})"
+        ),
         "scenarios": [],
-    }
+    }, run_id
 
 
 def _push_metrics(service: str, report: dict[str, Any]) -> None:
@@ -182,7 +223,7 @@ def cmd_build(
 
     # Step 2: Run auditor via workflow-agent
     print("\n--- Step 2: Behavioral audit ---")
-    report = _run_workflow_agent(
+    report, _run_id = _run_workflow_agent(
         service,
         "auditor",
         model=model,
@@ -241,7 +282,7 @@ def cmd_deploy(
     # Step 1: Verify passing audit report exists
     if not skip_audit_check:
         print("\n--- Step 1: Verify audit ---")
-        report = _latest_report(service)
+        report = _latest_report(service, role="auditor")
         if report is None:
             print(
                 "Error: No audit report found. Run 'workflow-orchestrate build' first.",
@@ -481,7 +522,7 @@ def cmd_monitor(
 
     # -- Audit phase (delegated to workflow-agent) --
     print("\n--- Audit ---")
-    report = _run_workflow_agent(
+    report, run_id = _run_workflow_agent(
         service,
         "auditor",
         model=model,
@@ -491,7 +532,7 @@ def cmd_monitor(
 
     # Save exec output alongside the report if we have it
     if exec_log_content is not None:
-        report_dir = _latest_report_dir(service)
+        report_dir = _find_report_dir_by_run_id(service, run_id)
         if report_dir is not None:
             exec_log_path = report_dir / "exec_output.log"
             exec_log_path.write_text(exec_log_content)

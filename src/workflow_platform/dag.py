@@ -378,7 +378,7 @@ def _execute_agent(
 
     assert stage.role is not None  # validated by model
 
-    report = agent_fn(
+    report, _run_id = agent_fn(
         service,
         stage.role,
         max_turns=stage.max_turns,

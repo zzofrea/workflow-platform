@@ -14,6 +14,7 @@ from workflow_platform.orchestrate import (
     _check_container_running,
     _confirm,
     _exec_service,
+    _find_report_by_run_id,
     _latest_report,
     cmd_build,
     cmd_deploy,
@@ -25,13 +26,17 @@ from workflow_platform.orchestrate import (
 
 class TestLatestReport:
     def test_finds_most_recent_report(self, tmp_path: Path) -> None:
-        # Create two report dirs under agent-output/svc/
+        import os  # noqa: E401
+        import time
+
         svc_dir = tmp_path / "agent-output" / "test-svc"
         svc_dir.mkdir(parents=True)
 
         old_dir = svc_dir / "auditor_2026-02-20_060000"
         old_dir.mkdir()
         (old_dir / "report.json").write_text(json.dumps({"overall": "fail"}))
+        # Set old mtime so sort-by-mtime picks the newer dir
+        os.utime(old_dir, (time.time() - 200, time.time() - 200))
 
         new_dir = svc_dir / "auditor_2026-02-22_060000"
         new_dir.mkdir()
@@ -46,6 +51,65 @@ class TestLatestReport:
     def test_returns_none_when_no_reports(self, tmp_path: Path) -> None:
         with patch("workflow_platform.orchestrate.Path.home", return_value=tmp_path):
             result = _latest_report("nonexistent-service")
+        assert result is None
+
+    def test_role_filter_ignores_other_roles(self, tmp_path: Path) -> None:
+        """monthly-analyst dirs must not shadow auditor results."""
+        import os  # noqa: E401
+        import time
+
+        svc_dir = tmp_path / "agent-output" / "test-svc"
+        svc_dir.mkdir(parents=True)
+
+        # Auditor report (older mtime)
+        aud_dir = svc_dir / "auditor_2026-03-12_111916"
+        aud_dir.mkdir()
+        (aud_dir / "report.json").write_text(json.dumps({"overall": "error"}))
+        os.utime(aud_dir, (time.time() - 100, time.time() - 100))
+
+        # monthly-analyst report (newer mtime, different role)
+        analyst_dir = svc_dir / "monthly-analyst_2026-03-11_194011"
+        analyst_dir.mkdir()
+        (analyst_dir / "report.json").write_text(json.dumps({"overall": "complete"}))
+
+        with patch("workflow_platform.orchestrate.Path.home", return_value=tmp_path):
+            result = _latest_report("test-svc", role="auditor")
+
+        assert result is not None
+        assert result["overall"] == "error"
+
+    def test_run_id_finds_exact_match(self, tmp_path: Path) -> None:
+        """run_id lookup finds the exact directory, ignoring others."""
+        svc_dir = tmp_path / "agent-output" / "test-svc"
+        svc_dir.mkdir(parents=True)
+
+        # Old report without run_id
+        old_dir = svc_dir / "auditor_2026-03-12_111916"
+        old_dir.mkdir()
+        (old_dir / "report.json").write_text(json.dumps({"overall": "pass"}))
+
+        # New report with run_id
+        new_dir = svc_dir / "auditor_2026-03-13_111928_abc12345"
+        new_dir.mkdir()
+        (new_dir / "report.json").write_text(json.dumps({"overall": "error"}))
+
+        with patch("workflow_platform.orchestrate.Path.home", return_value=tmp_path):
+            result = _find_report_by_run_id("test-svc", "abc12345")
+
+        assert result is not None
+        assert result["overall"] == "error"
+
+    def test_run_id_returns_none_when_not_found(self, tmp_path: Path) -> None:
+        svc_dir = tmp_path / "agent-output" / "test-svc"
+        svc_dir.mkdir(parents=True)
+
+        d = svc_dir / "auditor_2026-03-12_111916"
+        d.mkdir()
+        (d / "report.json").write_text(json.dumps({"overall": "pass"}))
+
+        with patch("workflow_platform.orchestrate.Path.home", return_value=tmp_path):
+            result = _find_report_by_run_id("test-svc", "nonexistent")
+
         assert result is None
 
 
@@ -86,14 +150,17 @@ class TestCmdBuild:
         mock_run_agent: MagicMock,
     ) -> None:
         mock_cmd_up.return_value = {"environmentId": "dev-123", "name": "dev-test"}
-        mock_run_agent.return_value = {
-            "overall": "pass",
-            "scenarios_pass": 3,
-            "scenarios_fail": 0,
-            "scenarios_error": 0,
-            "summary": "All good",
-            "scenarios": [],
-        }
+        mock_run_agent.return_value = (
+            {
+                "overall": "pass",
+                "scenarios_pass": 3,
+                "scenarios_fail": 0,
+                "scenarios_error": 0,
+                "summary": "All good",
+                "scenarios": [],
+            },
+            "test1234",
+        )
 
         report = cmd_build("test-service", force=True)
 
@@ -119,17 +186,20 @@ class TestCmdBuild:
         mock_run_agent: MagicMock,
     ) -> None:
         mock_cmd_up.return_value = {"environmentId": "dev-123"}
-        mock_run_agent.return_value = {
-            "overall": "fail",
-            "scenarios_pass": 1,
-            "scenarios_fail": 2,
-            "scenarios_error": 0,
-            "summary": "Data issues",
-            "scenarios": [
-                {"id": 1, "status": "pass", "description": "ok"},
-                {"id": 2, "status": "fail", "description": "stale"},
-            ],
-        }
+        mock_run_agent.return_value = (
+            {
+                "overall": "fail",
+                "scenarios_pass": 1,
+                "scenarios_fail": 2,
+                "scenarios_error": 0,
+                "summary": "Data issues",
+                "scenarios": [
+                    {"id": 1, "status": "pass", "description": "ok"},
+                    {"id": 2, "status": "fail", "description": "stale"},
+                ],
+            },
+            "test1234",
+        )
 
         report = cmd_build("test", force=True)
         assert report["overall"] == "fail"
@@ -285,11 +355,10 @@ class TestCmdMonitor:
     def test_monitor_delegates_to_workflow_agent(
         self, mock_config: MagicMock, mock_run_agent: MagicMock
     ) -> None:
-        mock_run_agent.return_value = {
-            "overall": "pass",
-            "summary": "All healthy",
-            "scenarios": [],
-        }
+        mock_run_agent.return_value = (
+            {"overall": "pass", "summary": "All healthy", "scenarios": []},
+            "test1234",
+        )
 
         report = cmd_monitor("bid-scraper")
 
@@ -307,17 +376,20 @@ class TestCmdMonitor:
     def test_monitor_returns_failures(
         self, mock_config: MagicMock, mock_run_agent: MagicMock
     ) -> None:
-        mock_run_agent.return_value = {
-            "overall": "fail",
-            "summary": "Stale data detected",
-            "scenarios": [{"id": 1, "status": "fail"}],
-        }
+        mock_run_agent.return_value = (
+            {
+                "overall": "fail",
+                "summary": "Stale data detected",
+                "scenarios": [{"id": 1, "status": "fail"}],
+            },
+            "test1234",
+        )
 
         report = cmd_monitor("bid-scraper")
 
         assert report["overall"] == "fail"
 
-    @patch("workflow_platform.orchestrate._latest_report_dir")
+    @patch("workflow_platform.orchestrate._find_report_dir_by_run_id")
     @patch("workflow_platform.orchestrate._run_workflow_agent")
     @patch("workflow_platform.orchestrate._exec_service")
     @patch("workflow_platform.orchestrate._check_container_running", return_value=True)
@@ -337,7 +409,10 @@ class TestCmdMonitor:
 
         mock_config.return_value.service_containers = {"etl": "etl-container"}
         mock_exec.return_value = (0, "ETL done\n", "")
-        mock_run_agent.return_value = {"overall": "pass", "summary": "ok", "scenarios": []}
+        mock_run_agent.return_value = (
+            {"overall": "pass", "summary": "ok", "scenarios": []},
+            "test1234",
+        )
 
         report = cmd_monitor("etl", exec_command="python -m etl run")
 
@@ -348,7 +423,7 @@ class TestCmdMonitor:
         # Verify exec output was saved alongside the report
         assert (archive / "exec_output.log").exists()
 
-    @patch("workflow_platform.orchestrate._latest_report_dir")
+    @patch("workflow_platform.orchestrate._find_report_dir_by_run_id")
     @patch("workflow_platform.orchestrate._run_workflow_agent")
     @patch("workflow_platform.orchestrate._notify_exec_failure")
     @patch("workflow_platform.orchestrate._exec_service")
@@ -370,7 +445,10 @@ class TestCmdMonitor:
 
         mock_config.return_value.service_containers = {"etl": "etl-ctr"}
         mock_exec.return_value = (1, "", "API timeout\n")
-        mock_run_agent.return_value = {"overall": "pass", "summary": "data ok", "scenarios": []}
+        mock_run_agent.return_value = (
+            {"overall": "pass", "summary": "data ok", "scenarios": []},
+            "test1234",
+        )
 
         report = cmd_monitor("etl", exec_command="python -m etl run")
 
@@ -400,7 +478,10 @@ class TestCmdMonitor:
     @patch("workflow_platform.orchestrate.PlatformConfig")
     def test_monitor_without_exec(self, mock_config: MagicMock, mock_run_agent: MagicMock) -> None:
         """When --exec is not provided, monitor is audit-only (no docker exec)."""
-        mock_run_agent.return_value = {"overall": "pass", "summary": "ok", "scenarios": []}
+        mock_run_agent.return_value = (
+            {"overall": "pass", "summary": "ok", "scenarios": []},
+            "test1234",
+        )
 
         report = cmd_monitor("bid-scraper")
 
@@ -412,7 +493,10 @@ class TestCmdMonitor:
     def test_audit_timeout_passed_through(
         self, mock_config: MagicMock, mock_run_agent: MagicMock
     ) -> None:
-        mock_run_agent.return_value = {"overall": "pass", "summary": "ok", "scenarios": []}
+        mock_run_agent.return_value = (
+            {"overall": "pass", "summary": "ok", "scenarios": []},
+            "test1234",
+        )
 
         cmd_monitor("etl", audit_timeout=300)
 
