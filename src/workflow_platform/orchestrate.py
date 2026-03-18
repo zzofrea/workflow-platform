@@ -640,6 +640,16 @@ def main() -> None:
         help="Skip audit report verification (not recommended)",
     )
 
+    # Briefing
+    briefing_p = sub.add_parser(
+        "briefing", help="Run a daily briefing cycle: gather -> synthesize -> post"
+    )
+    briefing_p.add_argument(
+        "mode",
+        choices=["morning", "consolidate", "weekly"],
+        help="Briefing mode",
+    )
+
     # DAG
     dag_p = sub.add_parser("dag", help="Execute a YAML-defined DAG for a service")
     dag_p.add_argument("service", help="Service name (matches dags/<service>.yaml)")
@@ -699,6 +709,13 @@ def main() -> None:
             audit_timeout=args.audit_timeout,
         )
         if report.get("overall") in ("fail", "error"):
+            sys.exit(1)
+
+    elif args.command == "briefing":
+        from workflow_platform.briefing import cmd_briefing
+
+        ok = cmd_briefing(args.mode)
+        if not ok:
             sys.exit(1)
 
 
