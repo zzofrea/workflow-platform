@@ -88,16 +88,19 @@ def _render_context(mode: str, context: dict[str, Any]) -> str:
             end = ev.get("end", "")
             summary = ev.get("summary", "(no title)")
             location = ev.get("location", "")
+            cal_name = ev.get("calendar", "")
             loc_str = f" @ {location}" if location else ""
-            lines.append(f"- {start} – {end}: **{summary}**{loc_str}")
+            cal_str = f" [{cal_name}]" if cal_name else ""
+            lines.append(f"- {start} – {end}: **{summary}**{loc_str}{cal_str}")
         lines.append("")
 
-    # Emails
+    # Emails (last 24h, read and unread)
     emails = context.get("emails", [])
     if emails:
-        lines.append("## Unread Emails")
+        lines.append("## Recent Emails (last 24h)")
         for msg in emails:
-            lines.append(f"- **{msg.get('subject', '(no subject)')}**")
+            unread_marker = "[UNREAD] " if msg.get("unread") else ""
+            lines.append(f"- **{unread_marker}{msg.get('subject', '(no subject)')}**")
             lines.append(f"  From: {msg.get('from', '')} | {msg.get('date', '')}")
             snippet = msg.get("snippet", "")
             if snippet:
