@@ -20,15 +20,18 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import structlog
 
 from workflow_platform.orchestrate import _run_workflow_agent
 
 log = structlog.get_logger("workflow_platform.briefing")
+
+_ET = ZoneInfo("America/New_York")
 
 BRIEFING_CONTAINER = "daily-briefing-agent"
 CONTEXT_SPEC_DIR = Path.home() / "workflow-agent" / "agents" / "daily-briefing" / "specs"
@@ -72,7 +75,7 @@ def _render_context(mode: str, context: dict[str, Any]) -> str:
     lines: list[str] = [
         f"# Briefing Context — {mode.capitalize()}",
         f"Generated: {context.get('as_of', datetime.now(UTC).isoformat())}",
-        f"Date: {context.get('date', date.today().isoformat())}",
+        f"Date: {context.get('date', datetime.now(_ET).date().isoformat())}",
         "",
     ]
 
