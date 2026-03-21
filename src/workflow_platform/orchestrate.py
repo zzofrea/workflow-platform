@@ -128,6 +128,7 @@ def _run_workflow_agent(
         str(timeout),
         "--run-id",
         run_id,
+        "--no-pull",  # image is always local; GHCR auth not configured on host Docker
     ]
     if no_notify:
         cmd.append("--no-notify")
