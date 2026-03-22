@@ -295,6 +295,7 @@ def execute_stage(
     log.info("dag.stage_start", stage=stage.name, type=stage.type)
     print(f"  [{stage.name}] Starting ({stage.type})...")
 
+    agent_report: dict[str, Any] | None = None
     try:
         if stage.type == "docker-exec":
             result = _execute_docker_exec(
@@ -304,7 +305,7 @@ def execute_stage(
                 check_container_fn=check_container_fn,
             )
         elif stage.type == "agent":
-            result = _execute_agent(stage, service, run_agent_fn=run_agent_fn)
+            result, agent_report = _execute_agent(stage, service, run_agent_fn=run_agent_fn)
         else:
             result = StageResult.ERROR
     except Exception as exc:
@@ -320,7 +321,7 @@ def execute_stage(
     )
     print(f"  [{stage.name}] {result.value.upper()} ({elapsed:.1f}s)")
 
-    _push_stage_metrics(push_metrics_fn, service, stage, result, elapsed)
+    _push_stage_metrics(push_metrics_fn, service, stage, result, elapsed, report=agent_report)
 
     return result
 
@@ -370,8 +371,8 @@ def _execute_agent(
     service: str,
     *,
     run_agent_fn: Any = None,
-) -> StageResult:
-    """Run an agent stage."""
+) -> tuple[StageResult, dict[str, Any]]:
+    """Run an agent stage, returning (result, report) so metrics get real scenario counts."""
     from workflow_platform.orchestrate import _run_workflow_agent
 
     agent_fn = run_agent_fn or _run_workflow_agent
@@ -387,10 +388,10 @@ def _execute_agent(
 
     overall = report.get("overall", "error")
     if overall in ("pass", "complete"):
-        return StageResult.PASS
+        return StageResult.PASS, report
     if overall == "error":
-        return StageResult.ERROR
-    return StageResult.FAIL
+        return StageResult.ERROR, report
+    return StageResult.FAIL, report
 
 
 def archive_exec_output(
@@ -450,8 +451,14 @@ def _push_stage_metrics(
     stage: Stage,
     result: StageResult,
     duration: float,
+    *,
+    report: dict[str, Any] | None = None,
 ) -> None:
-    """Push per-stage metrics to Pushgateway (best-effort)."""
+    """Push per-stage metrics to Pushgateway (best-effort).
+
+    For agent stages, pass the real report so scenario counts are accurate.
+    For docker-exec stages, report is None and a synthetic dict is used.
+    """
     try:
         if push_metrics_fn is not None:
             push_metrics_fn(service, stage, result, duration)
@@ -459,14 +466,14 @@ def _push_stage_metrics(
 
         from workflow_platform.metrics import push_metrics
 
-        report = {
+        actual_report = report or {
             "overall": result.value,
             "role": stage.role or stage.name,
             "duration_seconds": duration,
             "scenarios_pass": 0,
             "scenarios_fail": 0,
         }
-        push_metrics(service, stage.role or stage.name, report, stage=stage.name)
+        push_metrics(service, stage.role or stage.name, actual_report, stage=stage.name)
     except Exception as exc:
         log.warning("dag.metrics_push_failed", stage=stage.name, error=str(exc))
 
