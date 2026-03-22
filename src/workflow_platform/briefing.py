@@ -167,9 +167,31 @@ def _render_context(mode: str, context: dict[str, Any]) -> str:
             lines.append(t.get("raw_content", "").strip())
             lines.append("")
 
-    # Extensions
+    # Reminders & Backlog (from upcoming_reminders extension)
+    reminders = context.get("extensions", {}).get("upcoming_reminders.items", [])
+    if reminders:
+        lines.append("## Reminders & Backlog")
+        for r in reminders:
+            title = r.get("title", "")
+            priority = (r.get("priority") or "medium").upper()
+            deadline = r.get("deadline_date")
+            deadline_time = r.get("deadline_time")
+            notes = r.get("notes", "")
+            if deadline:
+                due = f"due: {deadline}"
+                if deadline_time:
+                    due += f" {deadline_time}"
+            else:
+                due = "backlog"
+            note_str = f" — {notes}" if notes else ""
+            lines.append(f"- [{priority}] {title} ({due}){note_str}")
+        lines.append("")
+
+    # Other extensions (generic fallback for any future extensions)
     extensions = context.get("extensions", {})
     for ext_key, rows in extensions.items():
+        if ext_key == "upcoming_reminders.items":
+            continue  # already rendered above
         if rows:
             lines.append(f"## Extension: {ext_key}")
             for row in rows:
