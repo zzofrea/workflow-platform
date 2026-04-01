@@ -187,10 +187,21 @@ def _render_context(mode: str, context: dict[str, Any]) -> str:
             lines.append(f"- [{priority}] {title} ({due}){note_str}")
         lines.append("")
 
+    # Prior Observations (loop-agent write-backs for cross-run continuity)
+    prior_obs = context.get("extensions", {}).get("prior_observations.items", [])
+    if prior_obs:
+        lines.append("## Prior Observations")
+        for item in prior_obs:
+            date_str = str(item.get("created_at", "unknown"))[:10]
+            lines.append(f"### {date_str}")
+            lines.append(item.get("raw_content", "").strip())
+            lines.append("")
+
     # Other extensions (generic fallback for any future extensions)
     extensions = context.get("extensions", {})
+    _RENDERED_EXT_KEYS = {"upcoming_reminders.items", "prior_observations.items"}
     for ext_key, rows in extensions.items():
-        if ext_key == "upcoming_reminders.items":
+        if ext_key in _RENDERED_EXT_KEYS:
             continue  # already rendered above
         if rows:
             lines.append(f"## Extension: {ext_key}")
@@ -262,6 +273,35 @@ def _post(mode: str, briefing_text: str) -> bool:
         return False
 
 
+def _writeback(mode: str, briefing_text: str) -> None:
+    """Capture the briefing synthesis into Open Brain as a loop-agent thought.
+
+    Fire-and-forget: must be called AFTER _post() completes so that a capture
+    failure never blocks delivery. Failures are logged but never propagated.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "-i", BRIEFING_CONTAINER, "briefing", "writeback", mode],
+            input=briefing_text,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            log.warning(
+                "briefing.writeback_failed",
+                mode=mode,
+                exit_code=result.returncode,
+                stderr=result.stderr[:300],
+            )
+        else:
+            log.info("briefing.writeback_ok", mode=mode)
+    except subprocess.TimeoutExpired:
+        log.warning("briefing.writeback_timeout", mode=mode)
+    except Exception as exc:
+        log.warning("briefing.writeback_error", mode=mode, error=str(exc))
+
+
 def _notify_failure(mode: str, stage: str, detail: str) -> None:
     """Send a workflow-notify warning for a briefing failure."""
     try:
@@ -314,6 +354,9 @@ def cmd_briefing(mode: str) -> bool:
     if not ok:
         _notify_failure(mode, "post", "docker exec post returned non-zero")
         return False
+
+    # Phase 4: Loop write-back (fire-and-forget — must not block delivery)
+    _writeback(mode, briefing_text)
 
     print(f"Briefing {mode} complete.")
     log.info("briefing.complete", mode=mode)

@@ -28,3 +28,10 @@ stages:
     condition: etl-pipeline.success
     when_day_of_month: [1]
     timeout: 120
+  - name: new-product-report
+    type: docker-exec
+    container: etl-scheduler
+    command: "python -m defendershield_etl.reports.new_product_performance"
+    depends_on: [auditor]
+    condition: etl-pipeline.success
+    timeout: 120

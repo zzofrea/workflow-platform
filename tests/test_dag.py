@@ -720,3 +720,25 @@ class TestMetricsStageLabel:
             mock_push.assert_called_once()
             call_kwargs = mock_push.call_args[1]
             assert call_kwargs["job"] == "workflow_agent_test-svc_auditor"
+
+    def test_push_stage_metrics_real_path_uses_report_scenario_counts(self) -> None:
+        """Production path: real agent report flows through to push_to_gateway."""
+        from workflow_platform.dag import _push_stage_metrics
+
+        stage = Stage(name="audit", type="agent", role="auditor")
+        real_report = {
+            "overall": "pass",
+            "duration_seconds": 45.2,
+            "scenarios_pass": 7,
+            "scenarios_fail": 1,
+        }
+        with patch("workflow_platform.metrics.push_to_gateway") as mock_push:
+            _push_stage_metrics(None, "test-svc", stage, StageResult.PASS, 50.0, report=real_report)
+
+        mock_push.assert_called_once()
+        # Verify scenario counts from real report reached the registry
+        registry = mock_push.call_args.kwargs["registry"]
+        metrics = {m.name: list(m.samples)[0].value for m in registry.collect()}
+        assert metrics["agent_run_scenarios_pass"] == 7
+        assert metrics["agent_run_scenarios_fail"] == 1
+        assert metrics["agent_run_result"] == 1  # pass -> 1
