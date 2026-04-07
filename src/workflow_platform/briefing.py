@@ -79,6 +79,16 @@ def _render_context(mode: str, context: dict[str, Any]) -> str:
         "",
     ]
 
+    # Surface Google auth failures prominently so they appear in the posted briefing
+    google_errors = context.get("google_errors", [])
+    if google_errors:
+        lines.append("## DATA WARNING")
+        lines.append(
+            "**Google auth failed — calendar and email data is MISSING from this briefing.**"
+        )
+        lines.append("Refresh tokens need to be regenerated in Google Cloud Console.")
+        lines.append("")
+
     # Calendar
     calendar = context.get("calendar", [])
     if calendar:
@@ -336,6 +346,16 @@ def cmd_briefing(mode: str) -> bool:
         _notify_failure(mode, "gather", "gather returned no context")
         return False
     print(f"Gathered context ({len(str(context))} chars)")
+
+    # Alert immediately if Google auth has failed — don't let it be silent
+    google_errors = context.get("google_errors", [])
+    if google_errors:
+        _notify_failure(
+            mode,
+            "google_auth",
+            "Google OAuth tokens invalid (invalid_grant). Calendar and email missing. "
+            "Regenerate GOOGLE_REFRESH_TOKEN_1 and GOOGLE_REFRESH_TOKEN_2 in Dokploy.",
+        )
 
     # Phase 2: Render + synthesize
     print("\n--- Phase 2: Synthesize ---")
