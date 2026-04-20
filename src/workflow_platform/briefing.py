@@ -36,8 +36,12 @@ _ET = ZoneInfo("America/New_York")
 BRIEFING_CONTAINER = "daily-briefing-agent"
 CONTEXT_SPEC_DIR = Path.home() / "workflow-agent" / "agents" / "daily-briefing" / "specs"
 
-# Per-mode synthesis timeout — briefings are simpler than audits
-SYNTHESIS_TIMEOUT = 120
+# Per-mode synthesis timeouts — weekly has 2x context of morning/consolidate
+SYNTHESIS_TIMEOUTS: dict[str, int] = {
+    "morning": 120,
+    "consolidate": 120,
+    "weekly": 300,
+}
 
 
 def _gather(mode: str) -> dict[str, Any] | None:
@@ -241,7 +245,7 @@ def _synthesize(mode: str) -> str | None:
         role=mode,
         model="sonnet",
         max_turns=10,
-        timeout=SYNTHESIS_TIMEOUT,
+        timeout=SYNTHESIS_TIMEOUTS.get(mode, 120),
         no_notify=True,  # briefing handles its own notifications
     )
 
