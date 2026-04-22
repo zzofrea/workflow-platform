@@ -10,7 +10,7 @@ and specs from its own agents/ directory. The orchestrator no longer needs
 
 Usage:
     workflow-orchestrate build  --service bid-scraper
-    workflow-orchestrate deploy --service bid-scraper --repo /home/docker/gov-bid-scrape
+    workflow-orchestrate deploy --service bid-scraper --repo /path/to/bid-scraper
     workflow-orchestrate monitor --service bid-scraper
     workflow-orchestrate monitor --service defendershield-etl \\
         --exec "python -m ..."

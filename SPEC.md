@@ -378,7 +378,7 @@ AND the operator is notified that the query did not match the allowed pattern.
 
 ```
 ; Planner produces a curl request to a URL not in the access document.
-GIVEN an access document for bid-scraper that lists "https://hillsboroughcounty.bonfirehub.com/api/..." as an allowed URL.
+GIVEN an access document for bid-scraper that lists "https://example-county.bonfirehub.com/api/..." as an allowed URL.
 WHEN the planner produces a query plan with a curl entry targeting "https://evil.com/exfiltrate".
 THEN the audit fails before any HTTP requests are made.
 AND the operator is notified that the URL did not match the allowlist.
