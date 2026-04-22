@@ -6,17 +6,17 @@ stages:
     container: etl-scheduler
     command: "python -m defendershield_etl.pipelines.daily_runner --catchup"
     timeout: 3600
-  - name: auditor
-    type: agent
-    role: auditor
+  - name: data-health
+    type: docker-exec
+    container: etl-scheduler
+    command: "pytest tests/test_data_health.py -m integration -v --tb=short"
     depends_on: [etl-pipeline]
-    max_turns: 25
-    timeout: 600
+    timeout: 120
   - name: weekly-report
     type: docker-exec
     container: etl-scheduler
     command: "python -m defendershield_etl.reports.weekly"
-    depends_on: [auditor]
+    depends_on: [data-health]
     condition: etl-pipeline.success
     when: [mon]
     timeout: 120
@@ -24,7 +24,7 @@ stages:
     type: docker-exec
     container: etl-scheduler
     command: "python -m defendershield_etl.reports.monthly"
-    depends_on: [auditor]
+    depends_on: [data-health]
     condition: etl-pipeline.success
     when_day_of_month: [1]
     timeout: 120
@@ -32,6 +32,6 @@ stages:
     type: docker-exec
     container: etl-scheduler
     command: "python -m defendershield_etl.reports.new_product_performance"
-    depends_on: [auditor]
+    depends_on: [data-health]
     condition: etl-pipeline.success
     timeout: 120
