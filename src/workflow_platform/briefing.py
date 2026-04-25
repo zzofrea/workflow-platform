@@ -379,6 +379,15 @@ def cmd_briefing(mode: str) -> bool:
         _notify_failure(mode, "post", "docker exec post returned non-zero")
         return False
 
+    # Push freshness gauge for the stale-briefing alert. Best-effort: a
+    # Pushgateway hiccup must never mask a successful post.
+    try:
+        from workflow_platform.metrics import push_briefing_post
+
+        push_briefing_post(mode)
+    except Exception as exc:
+        log.warning("briefing.metrics_push_failed", mode=mode, error=str(exc))
+
     # Phase 4: Loop write-back (fire-and-forget — must not block delivery)
     _writeback(mode, briefing_text)
 

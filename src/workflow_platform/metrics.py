@@ -7,6 +7,7 @@ affect the agent run outcome.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import structlog
@@ -90,3 +91,30 @@ def push_metrics(
         overall=overall,
         normalized=normalized,
     )
+
+
+def push_briefing_post(mode: str, post_ts: float | None = None) -> None:
+    """Push a freshness gauge after a successful daily-briefing post.
+
+    The gauge value is the Unix timestamp of the successful post, so Grafana
+    alerts can fire on staleness (e.g. ``time() - daily_briefing_last_post_ts >
+    36 * 3600``). One time-series per mode (morning/consolidate/weekly).
+    """
+    if post_ts is None:
+        post_ts = time.time()
+
+    registry = CollectorRegistry()
+    gauge = Gauge(
+        "daily_briefing_last_post_ts",
+        "Unix timestamp of the last successful daily-briefing post",
+        ["mode"],
+        registry=registry,
+    )
+    gauge.labels(mode=mode).set(post_ts)
+
+    push_to_gateway(
+        PUSHGATEWAY_URL,
+        job=f"daily_briefing_{mode}",
+        registry=registry,
+    )
+    log.info("metrics.briefing_post_pushed", mode=mode, ts=post_ts)
