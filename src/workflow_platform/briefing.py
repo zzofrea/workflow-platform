@@ -36,10 +36,14 @@ _ET = ZoneInfo("America/New_York")
 BRIEFING_CONTAINER = "daily-briefing-agent"
 CONTEXT_SPEC_DIR = Path.home() / "workflow-agent" / "agents" / "daily-briefing" / "specs"
 
-# Per-mode synthesis timeouts — weekly has 2x context of morning/consolidate
+# Per-mode synthesis timeouts — weekly has 2x context of morning/consolidate.
+# Morning/consolidate raised 120->240s: healthy morning runs already burn
+# 57-106s, and context spikes (36KB on 2026-05-25/26) plus occasional model
+# latency pushed synthesis past 120s -> killed mid-run -> empty -> no post
+# (the >36h stale-briefing alert on 2026-05-27).
 SYNTHESIS_TIMEOUTS: dict[str, int] = {
-    "morning": 120,
-    "consolidate": 120,
+    "morning": 240,
+    "consolidate": 240,
     "weekly": 300,
 }
 
