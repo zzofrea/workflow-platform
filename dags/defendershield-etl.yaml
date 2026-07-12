@@ -18,7 +18,12 @@ stages:
     command: "python -m defendershield_etl.reports.weekly"
     depends_on: [data-health]
     condition: etl-pipeline.success
-    when: [mon]
+    # Delayed from Monday to Thursday so the reported Mon-Sun week's tail
+    # (Sat/Sun) has aged >=4 days and Amazon Pending orders have priced.
+    # Date window is anchored to the most-recent complete week, so the run
+    # day only changes freshness, not which week is reported. See
+    # RECONCILIATION_FINDINGS: pending-order pricing lag (~90% by day 2-3).
+    when: [thu]
     timeout: 120
   - name: monthly-report
     type: docker-exec
@@ -26,7 +31,11 @@ stages:
     command: "python -m defendershield_etl.reports.monthly"
     depends_on: [data-health]
     condition: etl-pipeline.success
-    when_day_of_month: [1]
+    # Delayed from the 1st to the 5th so the prior month's last 1-2 days have
+    # aged >=4 days and Amazon Pending orders have priced. Date window is
+    # anchored to the prior calendar month, so the run day only changes
+    # freshness, not which month is reported.
+    when_day_of_month: [5]
     timeout: 120
   - name: new-product-report
     type: docker-exec
