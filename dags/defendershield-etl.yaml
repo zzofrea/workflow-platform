@@ -9,7 +9,20 @@ stages:
   - name: data-health
     type: docker-exec
     container: etl-scheduler
-    command: "pytest tests/test_data_health.py -m integration -v --tb=short"
+    command: "pytest tests/test_data_health.py -m 'integration and not opsdrift' -v --tb=short"
+    depends_on: [etl-pipeline]
+    timeout: 120
+  - name: ops-drift
+    type: docker-exec
+    container: etl-scheduler
+    # Client-side process drift, NOT pipeline correctness. Split out of data-health
+    # so a standing client backlog (e.g. warehouse->3PL transfers awaiting a manual
+    # SkuVault adjustment) cannot leave data-health permanently red and train
+    # everyone to ignore the one signal that means WE broke something.
+    # A failure here is actionable by DefenderShield ops, not by us.
+    # Emails the finding table to the ops list and exits non-zero when there is
+    # anything outstanding, so the alert survives a broken mailbox.
+    command: "python -m defendershield_etl.reports.transfer_drift"
     depends_on: [etl-pipeline]
     timeout: 120
   - name: weekly-report
