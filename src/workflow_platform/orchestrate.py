@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import uuid
@@ -408,7 +409,7 @@ def _exec_service(
     print(f"Executing: docker exec {container_name} {command}")
 
     result = subprocess.run(
-        ["docker", "exec", container_name, *command.split()],
+        ["docker", "exec", container_name, *shlex.split(command)],
         capture_output=True,
         text=True,
         timeout=3600,  # 1 hour max for long-running ETL jobs

@@ -23,6 +23,7 @@ from workflow_platform.dag import (
     load_dag,
     resolve_tiers,
 )
+from workflow_platform.orchestrate import _exec_service
 
 # -- Model Validation --
 
@@ -164,12 +165,12 @@ class TestLoadDAG:
     def test_loads_real_etl_dag(self) -> None:
         dag = load_dag("defendershield-etl")
         assert dag.service == "defendershield-etl"
-        assert len(dag.stages) == 5
+        assert len(dag.stages) == 6
         assert dag.stages[0].name == "etl-pipeline"
         assert dag.stages[1].name == "data-health"
         assert dag.stages[1].type == "docker-exec"
         monthly = next(s for s in dag.stages if s.name == "monthly-report")
-        assert monthly.when_day_of_month == [1]
+        assert monthly.when_day_of_month == [5]
 
     def test_missing_dag_raises(self) -> None:
         with pytest.raises(FileNotFoundError, match="DAG config not found"):
@@ -361,6 +362,32 @@ class TestExecuteStage:
         )
 
         assert result == StageResult.FAIL
+
+    def test_exec_service_preserves_quoted_argument(self) -> None:
+        """Regression: command.split() split a quoted -m expression into
+        separate argv entries, so pytest saw 'and'/'not'/'opsdrift' as
+        positional path args instead of one marker string (exit code 4,
+        0 tests collected). This silently red-lined data-health for
+        2026-09-08 through 2026-09-11 before shlex.split() fixed it."""
+        with patch("workflow_platform.orchestrate.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            _exec_service(
+                "ctr",
+                "pytest tests/test_data_health.py -m 'integration and not opsdrift' -v",
+                service="test-svc",
+            )
+
+        called_argv = mock_run.call_args[0][0]
+        assert called_argv == [
+            "docker",
+            "exec",
+            "ctr",
+            "pytest",
+            "tests/test_data_health.py",
+            "-m",
+            "integration and not opsdrift",
+            "-v",
+        ]
 
     def test_container_not_running_returns_error(self) -> None:
         stage = Stage(name="exec", type="docker-exec", container="ctr", command="echo")
