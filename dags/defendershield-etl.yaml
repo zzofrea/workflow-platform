@@ -25,6 +25,23 @@ stages:
     command: "python -m defendershield_etl.reports.transfer_drift"
     depends_on: [etl-pipeline]
     timeout: 120
+  - name: catalog-spine
+    type: docker-exec
+    container: etl-scheduler
+    # Cross-system catalogue disagreements: a product on the website that the 3PL
+    # has never heard of, a UPC that differs between Shopify and Amazon, a listing
+    # that lost its variation parent. Modelled on ops-drift and split from it for
+    # the same reason: these are findings about the client's catalogue, not about
+    # whether our pipeline is correct, and a standing backlog of them must not be
+    # able to turn data-health permanently red.
+    # Depends on etl-pipeline so the ShipMonk and catalogue pulls are fresh. If any
+    # source did not land, it reports that it skipped and compares nothing: a
+    # partial comparison invents hundreds of false absences.
+    # Exits non-zero when there is anything to act on, so the alert survives a
+    # broken mailbox. Nothing depends on this stage, so its failure reaches nothing.
+    command: "python -m defendershield_etl.reports.catalog_spine"
+    depends_on: [etl-pipeline]
+    timeout: 300
   - name: weekly-report
     type: docker-exec
     container: etl-scheduler
