@@ -37,8 +37,12 @@ stages:
     # Depends on etl-pipeline so the ShipMonk and catalogue pulls are fresh. If any
     # source did not land, it reports that it skipped and compares nothing: a
     # partial comparison invents hundreds of false absences.
-    # Exits non-zero when there is anything to act on, so the alert survives a
-    # broken mailbox. Nothing depends on this stage, so its failure reaches nothing.
+    # Findings do NOT fail the stage while SPINE_FAIL_ON_FINDINGS is off, which is
+    # the default: a new check starts with a large untriaged backlog and a stage
+    # that is red from day one gets muted within a week. The email is the signal.
+    # Turn the flag on once the backlog is small enough that red means something
+    # changed. A source that failed to land always fails the stage regardless.
+    # Nothing depends on this stage, so its failure reaches nothing.
     command: "python -m defendershield_etl.reports.catalog_spine"
     depends_on: [etl-pipeline]
     timeout: 300
