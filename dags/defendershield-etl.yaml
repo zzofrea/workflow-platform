@@ -42,6 +42,19 @@ stages:
     command: "python -m defendershield_etl.reports.catalog_spine"
     depends_on: [etl-pipeline]
     timeout: 300
+  - name: amazon-report-validation
+    type: docker-exec
+    container: etl-scheduler
+    # Compares the Amazon All Orders report snapshot with the Orders API feed:
+    # price drift, cancelled-vs-shipped, lines missing from either side, and
+    # Pending report prices that differ from the settled price (the check the
+    # Monday brief will depend on; SPEC-monday-reports.md in defendershield-etl).
+    # Ops-only email, non-zero on any finding or when today's report pull did
+    # not land. Nothing depends on this stage, so it never blocks sales, the
+    # forecast or the client reports.
+    command: "python -m defendershield_etl.reports.amazon_report_validation"
+    depends_on: [etl-pipeline]
+    timeout: 120
   - name: weekly-report
     type: docker-exec
     container: etl-scheduler
