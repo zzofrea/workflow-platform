@@ -165,12 +165,15 @@ class TestLoadDAG:
     def test_loads_real_etl_dag(self) -> None:
         dag = load_dag("defendershield-etl")
         assert dag.service == "defendershield-etl"
-        assert len(dag.stages) == 6
+        assert len(dag.stages) == 8
         assert dag.stages[0].name == "etl-pipeline"
         assert dag.stages[1].name == "data-health"
         assert dag.stages[1].type == "docker-exec"
         monthly = next(s for s in dag.stages if s.name == "monthly-report")
         assert monthly.when_day_of_month == [5]
+        validation = next(s for s in dag.stages if s.name == "amazon-report-validation")
+        assert validation.depends_on == ["etl-pipeline"]
+        assert validation.when is None
 
     def test_missing_dag_raises(self) -> None:
         with pytest.raises(FileNotFoundError, match="DAG config not found"):
