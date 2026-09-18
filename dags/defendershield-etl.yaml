@@ -65,12 +65,15 @@ stages:
     command: "python -m defendershield_etl.reports.weekly"
     depends_on: [data-health]
     condition: etl-pipeline.success
-    # Delayed from Monday to Thursday so the reported Mon-Sun week's tail
-    # (Sat/Sun) has aged >=4 days and Amazon Pending orders have priced.
-    # Date window is anchored to the most-recent complete week, so the run
-    # day only changes freshness, not which week is reported. See
-    # RECONCILIATION_FINDINGS: pending-order pricing lag (~90% by day 2-3).
-    when: [thu]
+    # Runs Monday for the week that ended the day before. Amazon's Orders API
+    # withholds price while an order is Pending, which is why this used to wait
+    # until Thursday; the All Orders report now supplies that price at order time
+    # (SPEC-monday-reports.md in defendershield-etl).
+    # Mon-Thu, not Monday alone: the report refuses to send when that morning's
+    # All Orders pull failed, and retries the next day. bronze.client_report_log
+    # keeps the client to one copy per week, so the extra days are no-ops once the
+    # brief has gone out. Exit 3 means "not reportable yet", not "broken".
+    when: [mon, tue, wed, thu]
     timeout: 120
   - name: monthly-report
     type: docker-exec
@@ -78,11 +81,10 @@ stages:
     command: "python -m defendershield_etl.reports.monthly"
     depends_on: [data-health]
     condition: etl-pipeline.success
-    # Delayed from the 1st to the 5th so the prior month's last 1-2 days have
-    # aged >=4 days and Amazon Pending orders have priced. Date window is
-    # anchored to the prior calendar month, so the run day only changes
-    # freshness, not which month is reported.
-    when_day_of_month: [5]
+    # Runs on the 1st for the month just ended, for the same reason the weekly
+    # brief moved to Monday. The 1st through the 5th are retry days, not five
+    # sends: bronze.client_report_log keeps the client to one copy per month.
+    when_day_of_month: [1, 2, 3, 4, 5]
     timeout: 120
   - name: new-product-report
     type: docker-exec

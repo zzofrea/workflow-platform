@@ -170,7 +170,9 @@ class TestLoadDAG:
         assert dag.stages[1].name == "data-health"
         assert dag.stages[1].type == "docker-exec"
         monthly = next(s for s in dag.stages if s.name == "monthly-report")
-        assert monthly.when_day_of_month == [5]
+        assert monthly.when_day_of_month == [1, 2, 3, 4, 5]
+        weekly = next(s for s in dag.stages if s.name == "weekly-report")
+        assert weekly.when == ["mon", "tue", "wed", "thu"]
         validation = next(s for s in dag.stages if s.name == "amazon-report-validation")
         assert validation.depends_on == ["etl-pipeline"]
         assert validation.when is None
