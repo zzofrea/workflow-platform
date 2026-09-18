@@ -62,7 +62,12 @@ stages:
   - name: weekly-report
     type: docker-exec
     container: etl-scheduler
-    command: "python -m defendershield_etl.reports.weekly"
+    # TEMPORARY (2026-09-18): --preview sends the brief to the ops list, not the
+    # client, so the first Monday brief can be read before DefenderShield sees it.
+    # Preview does NOT record the week as delivered, so removing this flag makes the
+    # next daily run send that same week to the client for real. Remove it once the
+    # 2026-09-21 brief has been reviewed.
+    command: "python -m defendershield_etl.reports.weekly --preview"
     depends_on: [data-health]
     condition: etl-pipeline.success
     # Runs Monday for the week that ended the day before. Amazon's Orders API
