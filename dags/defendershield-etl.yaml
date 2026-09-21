@@ -62,12 +62,11 @@ stages:
   - name: weekly-report
     type: docker-exec
     container: etl-scheduler
-    # TEMPORARY (2026-09-18): --preview sends the brief to the ops list, not the
-    # client, so the first Monday brief can be read before DefenderShield sees it.
-    # Preview does NOT record the week as delivered, so removing this flag makes the
-    # next daily run send that same week to the client for real. Remove it once the
-    # 2026-09-21 brief has been reviewed.
-    command: "python -m defendershield_etl.reports.weekly --preview"
+    # --preview lifted 2026-09-21: Zack reviewed the 2026-09-20 brief and approved
+    # the Monday cadence, and that week was sent to the client by hand the same day.
+    # bronze.client_report_log holds the row for period_end 2026-09-20, so this
+    # stage is a no-op until the week ending 2026-09-27.
+    command: "python -m defendershield_etl.reports.weekly"
     depends_on: [data-health]
     condition: etl-pipeline.success
     # Runs Monday for the week that ended the day before. Amazon's Orders API
@@ -83,7 +82,15 @@ stages:
   - name: monthly-report
     type: docker-exec
     container: etl-scheduler
-    command: "python -m defendershield_etl.reports.monthly"
+    # TEMPORARY (2026-09-21): no monthly report has ever been emailed, so the
+    # first one must not reach DefenderShield unread. --preview sends it to the ops
+    # list instead, and does NOT record the month as delivered, so the real send is
+    # still available afterwards by running the stage's command without this flag.
+    # Because nothing is recorded, the preview repeats on each retry day until that
+    # real send happens: Zack gets up to five copies and the client gets none, which
+    # is the safe direction to fail. Remove this flag once the September monthly has
+    # been reviewed and sent.
+    command: "python -m defendershield_etl.reports.monthly --preview"
     depends_on: [data-health]
     condition: etl-pipeline.success
     # Runs on the 1st for the month just ended, for the same reason the weekly
